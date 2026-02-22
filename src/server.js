@@ -343,29 +343,32 @@ async function runTool(name, args, session) {
       // Redirection après que l'audio d'OpenAI soit terminé
       // On écoute output_audio_buffer.committed qui signale la fin du dernier chunk audio
       let audioCommittedCount = 0;
+      const ws = session.openaiWs;
+      if (!ws) {
+        resolve({ error: "Session OpenAI introuvable." });
+        return;
+      }
       const onAudioDone = (raw) => {
         let ev;
         try { ev = JSON.parse(raw); } catch { return; }
-        // response.output_item.done avec audio = OpenAI a fini de générer l'audio
         if (ev.type === "response.output_item.done" && ev.item?.type === "message") {
-          oaiWs.removeListener("message", onAudioDone);
-          console.log(`[DTMF] Audio terminé → redirection dans 800ms vers ${collectUrl}`);
+          ws.removeListener("message", onAudioDone);
+          console.log(`[DTMF] Audio terminé → redirection dans 800ms`);
           setTimeout(() => {
-            if (!session.dtmfResolve) return; // déjà annulé
+            if (!session.dtmfResolve) return;
             twilioClient.calls(session.twilioCallSid)
               .update({ url: collectUrl, method: "POST" })
               .then(() => console.log("[DTMF] ✅ Redirection déclenchée"))
               .catch(e => {
-                console.error("[DTMF] ❌ Erreur redirection:", e.message);
+                console.error("[DTMF] ❌ Erreur:", e.message);
                 const r = session.dtmfResolve;
                 if (r) { delete session.dtmfResolve; r({ error: "Impossible de rediriger." }); }
               });
           }, 800);
         }
       };
-      oaiWs.on("message", onAudioDone);
-      // Sécurité : retirer l'écouteur après 15s si jamais response.output_item.done n'arrive pas
-      setTimeout(() => oaiWs.removeListener("message", onAudioDone), 15_000);
+      ws.on("message", onAudioDone);
+      setTimeout(() => ws.removeListener("message", onAudioDone), 15_000);
 
       // Timeout 60s
       setTimeout(() => {
