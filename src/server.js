@@ -65,7 +65,7 @@ app.post("/voice", (req, res) => {
 
   gather.say(
     { language: LANG },
-    "Allô! Je suis l’assistant du salon AI de COCO. Dis: rendez-vous, prix, horaires, adresse, ou humain."
+    "Allô! Je suis l’assistant du salon. Dis: rendez-vous, prix, horaires, adresse, ou humain."
   );
 
   twiml.redirect({ method: "POST" }, "/voice");
