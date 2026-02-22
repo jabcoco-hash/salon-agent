@@ -585,7 +585,7 @@ wss.on("connection", (twilioWs) => {
         tools:               TOOLS,
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
-        temperature:         0.4,  // plus bas = moins d'hallucinations, plus prévisible
+        temperature:         0.6,  // minimum permis par OpenAI Realtime API
       },
     }));
 
