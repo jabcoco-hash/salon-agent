@@ -190,18 +190,26 @@ FLUX RENDEZ-VOUS — suis cet ordre EXACTEMENT :
 2. Appelle get_available_slots(service) → propose 3 créneaux naturellement
 3. Confirme le créneau choisi
 4. Demande le prénom et nom complet
-5. Appelle collect_phone_dtmf → dis au client : "Tapez votre numéro de cellulaire sur votre clavier, suivi du dièse."
-   → Attends le résultat de la fonction avant de continuer
-   → La fonction retourne le numéro validé ou une erreur
-6. Confirme le numéro reçu à voix haute (ex: "J'ai bien le 5-1-4, 8-9-4, 5-2-2-1.")
+5. Avant d'appeler collect_phone_dtmf, dis exactement :
+   "Parfait! Maintenant, tapez votre numéro de cellulaire à dix chiffres sur le clavier de votre téléphone, puis appuyez sur le dièse."
+   → Appelle IMMÉDIATEMENT collect_phone_dtmf après avoir dit cette phrase
+   → NE pose AUCUNE autre question avant d'avoir le résultat de collect_phone_dtmf
+   → NE demande PAS "quelle est votre numéro" — utilise uniquement collect_phone_dtmf
+   → La fonction retourne { phone, phone_display } si succès, ou { error } si échec
+6. Quand collect_phone_dtmf retourne un numéro, confirme-le : "J'ai bien le [phone_display]. C'est bien ça?"
+   → Si le client confirme → appelle send_booking_link
+   → Si le client dit non → appelle collect_phone_dtmf à nouveau
 7. Appelle send_booking_link avec le numéro confirmé
-8. Dis : "Parfait! J'ai envoyé un lien par texto. Cliquez dessus pour entrer votre courriel et votre rendez-vous sera confirmé. Bonne journée!"
+8. Dis : "Parfait! J'ai envoyé un lien par texto au [phone_display]. Cliquez dessus pour entrer votre courriel et votre rendez-vous sera confirmé. Bonne journée!"
 
 RÈGLES :
 - NE demande JAMAIS l'email par téléphone
 - NE demande JAMAIS le numéro vocalement — utilise TOUJOURS collect_phone_dtmf
+- NE continue PAS si le client est silencieux — attends sa réponse, ne choisis pas à sa place
+- Si le client ne répond pas à une proposition de créneaux, redemande : "Lequel vous convient le mieux, le 1, 2 ou 3?"
 - Appelle send_booking_link IMMÉDIATEMENT après avoir confirmé le numéro
-- Si transfert demandé → transfer_to_agent`;
+- Si transfert demandé → transfer_to_agent
+- "l'heure" dans une réponse = le client parle des créneaux, PAS une question sur les heures d'ouverture`;
 }
 
 // ─── Outils ───────────────────────────────────────────────────────────────────
@@ -532,7 +540,12 @@ wss.on("connection", (twilioWs) => {
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
-        turn_detection:      { type: "server_vad" },
+        turn_detection: {
+          type: "server_vad",
+          threshold: 0.6,              // plus élevé = moins sensible au bruit ambiant
+          prefix_padding_ms: 300,       // attendre 300ms avant de considérer parole
+          silence_duration_ms: 800,     // attendre 800ms de silence avant de couper le tour
+        },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
         voice:               OPENAI_TTS_VOICE,
