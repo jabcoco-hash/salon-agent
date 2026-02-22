@@ -504,5 +504,17 @@ app.post("/process", async (req, res) => {
   }
 });
 
+
+app.get("/admin/calendly/event-types", async (req, res) => {
+  if (req.headers["x-admin-token"] !== process.env.ADMIN_TOKEN) {
+    return res.status(401).json({ ok: false });
+  }
+  const r = await fetch("https://api.calendly.com/event_types", {
+    headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` },
+  });
+  const data = await r.json();
+  res.json(data);
+});
+
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Salon agent (booking direct) running on ${port}`));
