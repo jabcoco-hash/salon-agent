@@ -340,17 +340,9 @@ async function runTool(name, args, session) {
 
       const collectUrl = `${base()}/collect-phone?sid=${encodeURIComponent(session.twilioCallSid)}`;
 
-      // Délai de 4s pour laisser Marie finir sa phrase avant que Twilio redirige
-      setTimeout(() => {
-        twilioClient.calls(session.twilioCallSid)
-          .update({ url: collectUrl, method: "POST" })
-          .then(() => console.log(`[DTMF] ✅ Appel redirigé vers ${collectUrl}`))
-          .catch(e => {
-            console.error("[DTMF] ❌ Erreur redirection:", e.message);
-            delete session.dtmfResolve;
-            resolve({ error: "Impossible de rediriger l'appel." });
-          });
-      }, 4000);
+      // Stocker l'URL de redirection — sera déclenchée sur response.done
+      session.pendingDtmfUrl = collectUrl;
+      console.log(`[DTMF] URL en attente de response.done : ${collectUrl}`);
 
       // Timeout 60s
       setTimeout(() => {
@@ -684,6 +676,30 @@ wss.on("connection", (twilioWs) => {
         pendingTools.delete(ev.call_id);
         break;
       }
+
+      // Quand OpenAI a fini de parler → déclencher la redirection DTMF si en attente
+      case "response.done":
+        if (session?.pendingDtmfUrl) {
+          const url = session.pendingDtmfUrl;
+          delete session.pendingDtmfUrl;
+          console.log(`[DTMF] response.done → redirection vers ${url}`);
+          // Petit délai pour que l'audio finisse de jouer côté client
+          setTimeout(() => {
+            twilioClient.calls(session.twilioCallSid)
+              .update({ url, method: "POST" })
+              .then(() => console.log("[DTMF] ✅ Redirection déclenchée"))
+              .catch(e => {
+                console.error("[DTMF] ❌ Erreur redirection:", e.message);
+                if (session.dtmfResolve) {
+                  const r = session.dtmfResolve;
+                  delete session.dtmfResolve;
+                  delete session.pendingDtmfUrl;
+                  r({ error: "Impossible de rediriger l'appel." });
+                }
+              });
+          }, 800);
+        }
+        break;
 
       case "error":
         console.error("[OAI ERROR]", JSON.stringify(ev.error));
