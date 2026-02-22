@@ -18,8 +18,6 @@ const {
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
   CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
-  CALENDLY_LOCATION_KIND,
-  CALENDLY_LOCATION_TEXT,
   OPENAI_API_KEY,
   OPENAI_MODEL = "gpt-4o-mini",
   LANG = "fr-CA",
@@ -53,10 +51,6 @@ function resetSession(callSid) {
 
 function say(target, text) {
   target.say({ language: LANG, voice: TTS_VOICE }, text);
-}
-
-function pause(twiml, seconds = 1) {
-  twiml.pause({ length: seconds });
 }
 
 function isHumanRequest(text = "") {
@@ -104,11 +98,14 @@ async function calendlyGetAvailableTimes(eventTypeUri, startIso, endIso) {
   return (json.collection || []).map(x => x.start_time).filter(Boolean);
 }
 
+// ✅ FIX: on n'envoie JAMAIS le champ location — Calendly utilise
+// automatiquement la location configurée sur l'event type (In-person,
+// 123 Saint-Jacques Ouest). Envoyer ce champ cause une erreur 400.
 async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }) {
   const body = {
     event_type: eventTypeUri,
     start_time: startTimeIso,
-    invitee: { name, email, timezone: CALENDLY_TIMEZONE }
+    invitee: { name, email, timezone: CALENDLY_TIMEZONE },
   };
 
   const r = await fetch("https://api.calendly.com/invitees", {
@@ -204,6 +201,7 @@ app.post("/process", async (req, res) => {
         expiresAt: now() + PENDING_TTL_MS,
         payload: { from: From, name: speech, service: session.data.service, eventTypeUri: session.data.eventTypeUri, startTimeIso: session.data.selectedSlot }
       });
+      // ✅ FIX: trim du slash final sur PUBLIC_BASE_URL pour éviter les doubles //
       const base = (PUBLIC_BASE_URL || "").replace(/\/$/, "");
       const link = `${base}/confirm-email/${token}`;
       await sendSms(From, `Lien de confirmation : ${link}`);
@@ -223,7 +221,13 @@ app.post("/process", async (req, res) => {
     const eventTypeUri = eventTypeUriForService(parsed.service);
     const { startIso, endIso } = computeWindow7Days();
     const slots = await calendlyGetAvailableTimes(eventTypeUri, startIso, endIso);
-    
+
+    if (!slots || slots.length < 3) {
+      say(twiml, "Désolé, il n'y a pas assez de disponibilités dans les 7 prochains jours. Rappelez-nous pour vérifier.");
+      twiml.hangup();
+      return res.type("text/xml").send(twiml.toString());
+    }
+
     session.state = "choose_slot";
     session.data = { service: parsed.service, eventTypeUri, slots: slots.slice(0, 3) };
 
@@ -243,7 +247,19 @@ app.get("/confirm-email/:token", (req, res) => {
   const entry = pending.get(req.params.token);
   if (!entry || entry.expiresAt < now()) return res.status(410).send("Lien expiré.");
   res.setHeader("Content-Type", "text/html");
-  res.send(`<html><body style="font-family:sans-serif;padding:20px;"><h2>Confirmer Email</h2><form method="POST"><input name="email" type="email" required style="padding:10px;width:100%"/><br><br><button style="padding:10px">Confirmer le RDV</button></form></body></html>`);
+  res.send(`<html><body style="font-family:sans-serif;padding:20px;max-width:480px;margin:auto;">
+    <h2>Confirmer votre rendez-vous</h2>
+    <p>Entrez votre adresse courriel pour finaliser la réservation.</p>
+    <form method="POST">
+      <input name="email" type="email" required placeholder="votre@email.com"
+        style="padding:10px;width:100%;box-sizing:border-box;font-size:16px;"/>
+      <br><br>
+      <button type="submit"
+        style="padding:12px 24px;background:#6c47ff;color:white;border:none;border-radius:6px;font-size:16px;cursor:pointer;">
+        Confirmer le RDV
+      </button>
+    </form>
+  </body></html>`);
 });
 
 app.post("/confirm-email/:token", async (req, res) => {
@@ -252,11 +268,19 @@ app.post("/confirm-email/:token", async (req, res) => {
   try {
     const { eventTypeUri, startTimeIso, name, from } = entry.payload;
     await calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email: req.body.email });
+    pending.delete(req.params.token); // nettoyer après usage
     await sendSms(from, "✅ Ton rendez-vous est confirmé dans notre calendrier !");
-    res.send("<h1>C'est confirmé ! Vous pouvez fermer cette page.</h1>");
-  } catch (e) { 
+    res.send(`<html><body style="font-family:sans-serif;padding:20px;max-width:480px;margin:auto;text-align:center;">
+      <h1>✅ C'est confirmé !</h1>
+      <p>Vous recevrez un courriel de confirmation de Calendly.</p>
+      <p>Vous pouvez fermer cette page.</p>
+    </body></html>`);
+  } catch (e) {
     console.error(e);
-    res.status(500).send("Erreur lors de la création Calendly."); 
+    res.status(500).send(`<html><body style="font-family:sans-serif;padding:20px;">
+      <h2>Erreur</h2><p>Impossible de créer le rendez-vous. Veuillez rappeler le salon.</p>
+      <pre style="font-size:12px;color:red;">${e.message}</pre>
+    </body></html>`);
   }
 });
 
