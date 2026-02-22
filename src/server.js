@@ -506,48 +506,71 @@ app.post("/process", async (req, res) => {
 
 app.get("/debug/calendly/resolve-event-type", async (req, res) => {
   try {
-    const eventLink = req.query.link; // ex: https://calendly.com/xxx/yyy
+    const eventLink = req.query.link; // ex: https://calendly.com/jabcoco/coupe-femme
     if (!eventLink) return res.status(400).json({ ok: false, error: "Missing ?link=" });
 
-    // Calendly link looks like: https://calendly.com/{slug}/{event_slug}
-    const u = new URL(eventLink);
-    const parts = u.pathname.split("/").filter(Boolean);
-    if (parts.length < 2) {
-      return res.status(400).json({ ok: false, error: "Invalid Calendly link format" });
-    }
-    const userSlug = parts[0];
-    const eventSlug = parts[1];
+    const token = process.env.CALENDLY_API_TOKEN;
+    if (!token) return res.status(400).json({ ok: false, error: "Missing CALENDLY_API_TOKEN" });
 
-    // 1) Get user
-    const userResp = await fetch(`https://api.calendly.com/users/${userSlug}`, {
-      headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
+    // 1) Get current user (no x-admin-token needed)
+    const meResp = await fetch("https://api.calendly.com/users/me", {
+      headers: { Authorization: `Bearer ${token}` }
     });
-
-    // Some accounts won’t support /users/{slug}. So fallback:
-    // list event types and match by slug.
-    if (!userResp.ok) {
-      const listResp = await fetch("https://api.calendly.com/event_types", {
-        headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
-      });
-      const list = await listResp.json();
-      const match = (list.collection || []).find(e => (e.slug || "").toLowerCase() === eventSlug.toLowerCase());
-      if (!match) return res.status(404).json({ ok: false, error: "Event type not found by slug", eventSlug });
-      return res.json({ ok: true, eventSlug, eventTypeUri: match.uri, name: match.name });
+    const meData = await meResp.json();
+    if (!meResp.ok) {
+      return res.status(meResp.status).json({ ok: false, error: "users/me failed", details: meData });
     }
 
-    const userData = await userResp.json();
-    const userUri = userData.resource?.uri;
+    const userUri = meData.resource?.uri;
+    if (!userUri) return res.status(500).json({ ok: false, error: "No user uri from /users/me" });
 
-    // 2) List event types for that user and match the slug
+    // 2) List event types for that user
     const etResp = await fetch(`https://api.calendly.com/event_types?user=${encodeURIComponent(userUri)}`, {
-      headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
+      headers: { Authorization: `Bearer ${token}` }
     });
     const etData = await etResp.json();
+    if (!etResp.ok) {
+      return res.status(etResp.status).json({ ok: false, error: "event_types list failed", details: etData });
+    }
 
-    const match = (etData.collection || []).find(e => (e.slug || "").toLowerCase() === eventSlug.toLowerCase());
-    if (!match) return res.status(404).json({ ok: false, error: "Event type not found", userSlug, eventSlug });
+    const normalized = (s) => (s || "").trim().toLowerCase().replace(/\/+$/, "");
+    const target = normalized(eventLink);
 
-    return res.json({ ok: true, userSlug, eventSlug, eventTypeUri: match.uri, name: match.name });
+    // 3) Match by scheduling_url first (best), fallback by slug from URL
+    const u = new URL(eventLink);
+    const parts = u.pathname.split("/").filter(Boolean);
+    const eventSlugFromUrl = (parts[1] || "").toLowerCase();
+
+    const collection = etData.collection || [];
+
+    let match =
+      collection.find(e => normalized(e.scheduling_url) === target) ||
+      collection.find(e => normalized(e.scheduling_url).endsWith("/" + eventSlugFromUrl)) ||
+      collection.find(e => (e.slug || "").toLowerCase() === eventSlugFromUrl);
+
+    if (!match) {
+      // Return helpful debug info (names/slugs/urls)
+      return res.status(404).json({
+        ok: false,
+        error: "Event type not found",
+        lookedFor: { target, eventSlugFromUrl },
+        available: collection.map(e => ({
+          name: e.name,
+          slug: e.slug,
+          scheduling_url: e.scheduling_url,
+          uri: e.uri
+        }))
+      });
+    }
+
+    return res.json({
+      ok: true,
+      inputLink: eventLink,
+      name: match.name,
+      slug: match.slug,
+      scheduling_url: match.scheduling_url,
+      eventTypeUri: match.uri
+    });
   } catch (e) {
     return res.status(500).json({ ok: false, error: e?.message || "error" });
   }
