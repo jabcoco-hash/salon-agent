@@ -26,7 +26,7 @@ const {
   CALENDLY_LOCATION_KIND,
   CALENDLY_LOCATION_TEXT,
 
-  // OpenAI (optionnel, on peut garder simple pour MVP)
+  // OpenAI (optionnel)
   OPENAI_API_KEY,
   OPENAI_MODEL = "gpt-4o-mini",
 
@@ -66,9 +66,20 @@ function say(target, text) {
   target.say({ language: LANG, voice: TTS_VOICE }, text);
 }
 
+function pause(twiml, seconds = 1) {
+  twiml.pause({ length: seconds });
+}
+
 function isHumanRequest(text = "") {
   const t = text.toLowerCase();
-  return t.includes("humain") || t.includes("agent") || t.includes("personne") || t.includes("propriétaire") || t.includes("proprietaire");
+  return (
+    t.includes("humain") ||
+    t.includes("agent") ||
+    t.includes("personne") ||
+    t.includes("propriétaire") ||
+    t.includes("proprietaire") ||
+    t.includes("transf")
+  );
 }
 
 function serviceFromText(text = "") {
@@ -78,12 +89,14 @@ function serviceFromText(text = "") {
   if (t.includes("non")) return "nonbinaire";
   return null;
 }
+
 function labelForService(s) {
   if (s === "homme") return "Coupe homme";
   if (s === "femme") return "Coupe femme";
   if (s === "nonbinaire") return "Coupe non binaire";
   return "Service";
 }
+
 function eventTypeUriForService(s) {
   if (s === "homme") return CALENDLY_EVENT_TYPE_URI_HOMME;
   if (s === "femme") return CALENDLY_EVENT_TYPE_URI_FEMME;
@@ -94,7 +107,13 @@ function eventTypeUriForService(s) {
 function slotToFrench(iso) {
   try {
     const d = new Date(iso);
-    return d.toLocaleString("fr-CA", { weekday: "long", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleString("fr-CA", {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   } catch {
     return iso;
   }
@@ -139,6 +158,7 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     headers: calendlyHeaders(),
     body: JSON.stringify(body),
   });
+
   const json = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Calendly create invitee failed: ${r.status} ${JSON.stringify(json)}`);
   return json;
@@ -149,14 +169,12 @@ async function sendSms(to, body) {
   await twilioClient.messages.create({ from: TWILIO_CALLER_ID, to, body });
 }
 
-// Fenêtre MVP: 7 jours
-function computeWindow() {
+function computeWindow7Days() {
   const start = new Date(Date.now() + 2 * 60 * 1000);
   const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000);
   return { startIso: start.toISOString(), endIso: end.toISOString() };
 }
 
-// (Optionnel) parse date/service via OpenAI; sinon on fait simple.
 async function parseServiceIntent(text) {
   const local = serviceFromText(text);
   if (local) return { service: local };
@@ -178,12 +196,15 @@ Return JSON only: {"service":"homme|femme|nonbinaire|null"}
   try { return JSON.parse(raw); } catch { return { service: null }; }
 }
 
+// ─────────────────────────────────────────────
+// Health
+// ─────────────────────────────────────────────
 app.get("/", (req, res) => {
-  res.json({ ok: true, service: "salon-mvp-booking-sms-email" });
+  res.json({ ok: true, service: "salon-mvp-booking-sms-email", lang: LANG });
 });
 
 // ─────────────────────────────────────────────
-// 1) Entrée voix
+// 1) Entrée voix (gather -> /process)
 // ─────────────────────────────────────────────
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
@@ -194,14 +215,20 @@ app.post("/voice", (req, res) => {
     method: "POST",
     language: LANG,
     speechTimeout: "auto",
-    timeout: 10,
+    timeout: 14,    // PLUS LONG
     numDigits: 1,
+    bargeIn: true,  // plus naturel
   });
 
-  say(gather, "Allô! Pour un rendez-vous dis: coupe homme, coupe femme, ou coupe non binaire. Tu peux aussi dire: humain.");
+  // Message plus court + humain
+  say(gather, "Allô! Bienvenue au Salon Coco.");
+  pause(gather, 1);
+  say(gather, "Dis-moi ce que tu veux réserver: homme, femme, ou non binaire.");
+  pause(gather, 1);
+  say(gather, "Tu peux aussi dire: humain.");
 
-  // si rien capté
-  say(twiml, "Je t’ai pas bien entendu.");
+  // Si rien capté
+  say(twiml, "Je t’ai pas entendu. On recommence.");
   twiml.redirect({ method: "POST" }, "/voice");
 
   res.type("text/xml").send(twiml.toString());
@@ -212,8 +239,9 @@ app.post("/voice", (req, res) => {
 // ─────────────────────────────────────────────
 app.post("/process", async (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
+
   const callSid = req.body.CallSid || "no-callsid";
-  const from = (req.body.From || "").trim(); // numéro client (on va l’utiliser pour SMS)
+  const from = (req.body.From || "").trim();
   const speech = (req.body.SpeechResult || "").trim();
   const digits = (req.body.Digits || "").trim();
 
@@ -229,35 +257,45 @@ app.post("/process", async (req, res) => {
       return res.type("text/xml").send(twiml.toString());
     }
 
-    // ── ÉTAT: choisir slot (DTMF 1/2/3)
+    // ── ÉTAT: choose_slot (attend DTMF 1/2/3)
     if (session.state === "choose_slot") {
       const idx = parseInt(digits, 10);
       const slots = session.data.slots || [];
-      if (![1,2,3].includes(idx) || !slots[idx - 1]) {
-        say(twiml, "Appuie sur 1, 2 ou 3 pour choisir une disponibilité.");
-        twiml.redirect({ method: "POST" }, "/voice");
+      if (![1, 2, 3].includes(idx) || !slots[idx - 1]) {
+        say(twiml, "Appuie sur 1, 2 ou 3 pour choisir.");
+        // IMPORTANT: on reste dans /process (pas /voice)
+        twiml.redirect({ method: "POST" }, "/process");
         return res.type("text/xml").send(twiml.toString());
       }
+
       session.data.selectedSlot = slots[idx - 1];
       session.state = "collect_name";
-      say(twiml, "Parfait. Quel est ton prénom et ton nom?");
-      twiml.redirect({ method: "POST" }, "/voice");
+
+      say(twiml, "Parfait.");
+      pause(twiml, 1);
+      say(twiml, "Dis-moi ton prénom et ton nom.");
+      // IMPORTANT: rester dans /process
+      twiml.redirect({ method: "POST" }, "/process");
       return res.type("text/xml").send(twiml.toString());
     }
 
-    // ── ÉTAT: collecter nom (speech)
+    // ── ÉTAT: collect_name (attend speech)
     if (session.state === "collect_name") {
       if (!speech) {
-        say(twiml, "Je t’ai pas bien entendu. Peux-tu répéter ton nom?");
-        twiml.redirect({ method: "POST" }, "/voice");
+        say(twiml, "Je t’ai pas bien entendu.");
+        pause(twiml, 1);
+        say(twiml, "Répète ton prénom et ton nom.");
+        // IMPORTANT: rester dans /process
+        twiml.redirect({ method: "POST" }, "/process");
         return res.type("text/xml").send(twiml.toString());
       }
-      session.data.name = speech;
-      session.state = "confirm_sms_email";
 
-      // Ici: on ne demande PAS email par voix.
+      session.data.name = speech;
+
+      // SMS pour email + booking final
       if (!PUBLIC_BASE_URL) throw new Error("Missing PUBLIC_BASE_URL");
       if (!CALENDLY_API_TOKEN) throw new Error("Missing CALENDLY_API_TOKEN");
+      if (!from) throw new Error("Missing caller From number");
 
       const token = crypto.randomBytes(16).toString("hex");
       const payload = {
@@ -271,9 +309,16 @@ app.post("/process", async (req, res) => {
       pending.set(token, { expiresAt: now() + PENDING_TTL_MS, payload });
 
       const link = `${PUBLIC_BASE_URL.replace(/\/+$/, "")}/confirm-email/${token}`;
+
       await sendSms(from, `✅ Pour confirmer ton RDV, entre ton email ici: ${link}`);
 
-      say(twiml, "Parfait. Je viens de t’envoyer un texto pour confirmer ton courriel et finaliser le rendez-vous. À bientôt!");
+      say(twiml, "Super.");
+      pause(twiml, 1);
+      say(twiml, "Je viens de t’envoyer un texto.");
+      pause(twiml, 1);
+      say(twiml, "Confirme ton courriel, et je finalise le rendez-vous.");
+      pause(twiml, 1);
+      say(twiml, "À bientôt!");
       twiml.hangup();
 
       resetSession(callSid);
@@ -282,35 +327,40 @@ app.post("/process", async (req, res) => {
 
     // ── ÉTAT: idle (début)
     if (!speech && !digits) {
-      say(twiml, "Je t’ai pas bien entendu. Dis: coupe homme, femme, ou non binaire.");
-      twiml.redirect({ method: "POST" }, "/voice");
+      say(twiml, "Je t’ai pas entendu.");
+      pause(twiml, 1);
+      say(twiml, "Dis: coupe homme, coupe femme, ou coupe non binaire.");
+      twiml.redirect({ method: "POST" }, "/voice"); // ici oui, on retourne au menu
       return res.type("text/xml").send(twiml.toString());
     }
 
-    // Comprendre service
+    // Parse service
     const parsed = await parseServiceIntent(speech);
     const service = parsed.service;
 
     if (!service) {
+      say(twiml, "OK.");
+      pause(twiml, 1);
       say(twiml, "Tu veux une coupe homme, une coupe femme, ou une coupe non binaire?");
-      twiml.redirect({ method: "POST" }, "/voice");
+      twiml.redirect({ method: "POST" }, "/voice"); // menu
       return res.type("text/xml").send(twiml.toString());
     }
 
     const eventTypeUri = eventTypeUriForService(service);
-    if (!eventTypeUri) throw new Error("Missing CALENDLY_EVENT_TYPE_URI for service: " + service);
+    if (!eventTypeUri) throw new Error(`Missing CALENDLY_EVENT_TYPE_URI for ${service}`);
 
-    // Get available times
-    const { startIso, endIso } = computeWindow();
+    const { startIso, endIso } = computeWindow7Days();
     const slots = await calendlyGetAvailableTimes(eventTypeUri, startIso, endIso);
 
     if (!slots.length) {
-      say(twiml, "Je ne vois pas de disponibilités dans les 7 prochains jours. Veux-tu parler à un humain?");
+      say(twiml, "Je ne vois pas de disponibilités dans les prochains jours.");
+      pause(twiml, 1);
+      say(twiml, "Tu veux que je te transfère à un humain?");
       twiml.redirect({ method: "POST" }, "/voice");
       return res.type("text/xml").send(twiml.toString());
     }
 
-    // Proposer 3 slots max
+    // Proposer 3 slots max (lentement)
     const top = slots.slice(0, 3);
 
     session.state = "choose_slot";
@@ -323,14 +373,28 @@ app.post("/process", async (req, res) => {
       name: null,
     };
 
-    const spoken = top.map((s, i) => `${i + 1}: ${slotToFrench(s)}`).join(". ");
-    say(twiml, `OK. Pour ${session.data.serviceLabel}, j’ai: ${spoken}. Appuie sur 1, 2 ou 3.`);
-    twiml.redirect({ method: "POST" }, "/voice");
+    say(twiml, `Parfait. Pour ${session.data.serviceLabel}, j’ai trois choix.`);
+    pause(twiml, 1);
+    say(twiml, `Appuie sur 1 pour ${slotToFrench(top[0])}.`);
+    pause(twiml, 1);
+    if (top[1]) {
+      say(twiml, `Appuie sur 2 pour ${slotToFrench(top[1])}.`);
+      pause(twiml, 1);
+    }
+    if (top[2]) {
+      say(twiml, `Appuie sur 3 pour ${slotToFrench(top[2])}.`);
+      pause(twiml, 1);
+    }
+
+    // IMPORTANT: on reste dans /process pour capter les digits
+    twiml.redirect({ method: "POST" }, "/process");
     return res.type("text/xml").send(twiml.toString());
 
   } catch (e) {
     console.error("process error:", e?.message || e);
-    say(twiml, "Désolé, petit pépin technique. Dis: humain pour être transféré, ou rappelle dans un instant.");
+    say(twiml, "Désolé, petit pépin technique.");
+    pause(twiml, 1);
+    say(twiml, "Dis: humain pour être transféré.");
     twiml.redirect({ method: "POST" }, "/voice");
     return res.type("text/xml").send(twiml.toString());
   }
@@ -351,7 +415,10 @@ app.get("/confirm-email/:token", (req, res) => {
   res.end(`
 <!doctype html>
 <html lang="fr-CA">
-<head><meta name="viewport" content="width=device-width, initial-scale=1" /><title>Confirmer email</title></head>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Confirmer email</title>
+</head>
 <body style="font-family: system-ui; max-width: 520px; margin: 40px auto; padding: 0 16px;">
   <h2>Confirmer ton courriel</h2>
   <p>Entre ton email pour finaliser le rendez-vous.</p>
@@ -382,7 +449,7 @@ app.post("/confirm-email/:token", async (req, res) => {
   const { from, name, service, eventTypeUri, startTimeIso } = entry.payload;
 
   try {
-    const created = await calendlyCreateInvitee({
+    await calendlyCreateInvitee({
       eventTypeUri,
       startTimeIso,
       name,
@@ -393,7 +460,6 @@ app.post("/confirm-email/:token", async (req, res) => {
 
     const when = slotToFrench(startTimeIso);
     const svcLabel = labelForService(service);
-    const detailsUrl = created?.resource?.uri || "";
 
     // SMS confirmation final (best effort)
     await sendSms(from, `✅ RDV confirmé: ${svcLabel}\n🗓️ ${when}\nMerci!`);
@@ -407,7 +473,6 @@ app.post("/confirm-email/:token", async (req, res) => {
   <h2>✅ Rendez-vous confirmé</h2>
   <p><strong>${svcLabel}</strong></p>
   <p>${when}</p>
-  ${detailsUrl ? `<p style="word-break:break-all; font-size: 12px; opacity: .7;">${detailsUrl}</p>` : ""}
   <p>Tu peux fermer cette page.</p>
 </body>
 </html>
