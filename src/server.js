@@ -40,7 +40,7 @@ const {
   CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL           = "gpt-4o-realtime-preview-2024-12-17",
-  OPENAI_TTS_VOICE                = "shimmer",
+  OPENAI_TTS_VOICE                = "alloy",
 } = process.env;
 
 // Lecture explicite sans valeur par défaut hardcodée — Railway doit définir ces variables
