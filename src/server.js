@@ -504,16 +504,53 @@ app.post("/process", async (req, res) => {
   }
 });
 
+app.get("/debug/calendly/resolve-event-type", async (req, res) => {
+  try {
+    const eventLink = req.query.link; // ex: https://calendly.com/xxx/yyy
+    if (!eventLink) return res.status(400).json({ ok: false, error: "Missing ?link=" });
 
-app.get("/admin/calendly/event-types", async (req, res) => {
-  if (req.headers["x-admin-token"] !== process.env.ADMIN_TOKEN) {
-    return res.status(401).json({ ok: false });
+    // Calendly link looks like: https://calendly.com/{slug}/{event_slug}
+    const u = new URL(eventLink);
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) {
+      return res.status(400).json({ ok: false, error: "Invalid Calendly link format" });
+    }
+    const userSlug = parts[0];
+    const eventSlug = parts[1];
+
+    // 1) Get user
+    const userResp = await fetch(`https://api.calendly.com/users/${userSlug}`, {
+      headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
+    });
+
+    // Some accounts won’t support /users/{slug}. So fallback:
+    // list event types and match by slug.
+    if (!userResp.ok) {
+      const listResp = await fetch("https://api.calendly.com/event_types", {
+        headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
+      });
+      const list = await listResp.json();
+      const match = (list.collection || []).find(e => (e.slug || "").toLowerCase() === eventSlug.toLowerCase());
+      if (!match) return res.status(404).json({ ok: false, error: "Event type not found by slug", eventSlug });
+      return res.json({ ok: true, eventSlug, eventTypeUri: match.uri, name: match.name });
+    }
+
+    const userData = await userResp.json();
+    const userUri = userData.resource?.uri;
+
+    // 2) List event types for that user and match the slug
+    const etResp = await fetch(`https://api.calendly.com/event_types?user=${encodeURIComponent(userUri)}`, {
+      headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` }
+    });
+    const etData = await etResp.json();
+
+    const match = (etData.collection || []).find(e => (e.slug || "").toLowerCase() === eventSlug.toLowerCase());
+    if (!match) return res.status(404).json({ ok: false, error: "Event type not found", userSlug, eventSlug });
+
+    return res.json({ ok: true, userSlug, eventSlug, eventTypeUri: match.uri, name: match.name });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e?.message || "error" });
   }
-  const r = await fetch("https://api.calendly.com/event_types", {
-    headers: { Authorization: `Bearer ${process.env.CALENDLY_API_TOKEN}` },
-  });
-  const data = await r.json();
-  res.json(data);
 });
 
 const port = process.env.PORT || 3000;
