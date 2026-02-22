@@ -1,15 +1,20 @@
 import express from "express";
 
 const app = express();
+
+// Twilio envoie souvent du x-www-form-urlencoded
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
+// ✅ Health check (ton URL Railway retourne ça)
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "salon-agent", lang: "fr-CA" });
 });
 
+// ✅ Webhook Twilio: appel entrant
+// Twilio va appeler ce endpoint quand quelqu’un appelle ton numéro Twilio
 app.post("/twilio/voice", (req, res) => {
   const fallbackNumber = process.env.FALLBACK_NUMBER || "+15148945221";
 
@@ -24,4 +29,12 @@ app.post("/twilio/voice", (req, res) => {
   res.type("text/xml").send(twiml);
 });
 
-app.listen(PORT, () => console.log("✅ Running on", PORT));
+// ✅ (Optionnel) callback de statut Twilio (pour debug)
+app.post("/twilio/status", (req, res) => {
+  console.log("Twilio status callback:", req.body);
+  res.sendStatus(200);
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ salon-agent listening on port ${PORT}`);
+});
