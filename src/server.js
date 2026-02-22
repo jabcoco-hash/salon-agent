@@ -142,10 +142,15 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     invitee: { name, email, timezone: CALENDLY_TIMEZONE },
   };
 
+  // ON COUPE CETTE SECTION : C'est elle qui cause l'erreur 400.
+  // En ne pas envoyant d'objet "location", Calendly utilisera 
+  // la config par défaut de ton type d'événement.
+  /*
   if (CALENDLY_LOCATION_KIND) {
     body.location = { kind: CALENDLY_LOCATION_KIND };
     if (CALENDLY_LOCATION_TEXT) body.location.location = CALENDLY_LOCATION_TEXT;
   }
+  */
 
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
