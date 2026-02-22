@@ -186,21 +186,24 @@ FLUX RENDEZ-VOUS — étape par étape
 
 ÉTAPE 4 — Nom
   → Demande : "C'est à quel nom?"
-  → Attends la réponse — OBLIGATOIRE
+  → Quand le client répond, confirme chaleureusement : "Parfait [prénom]!"
+  → OBLIGATOIRE — attends la réponse avant de passer à l'étape 5
 
 ÉTAPE 5 — Numéro de téléphone
-  ${callerNumber ? `→ Tu as le numéro appelant : ${callerDisplay}
-  → Demande : "Je peux t'envoyer la confirmation au ${callerDisplay}?"
-  → Si OUI → utilise ce numéro, appelle send_booking_link directement
-  → Si NON → demande le numéro vocalement (voir ci-dessous)` : `→ Pas de numéro appelant disponible → demande vocalement (voir ci-dessous)`}
+  ${callerNumber ? `→ Tu as le numéro appelant. Appelle d'abord format_caller_number pour obtenir la version lisible.
+  → Dis EXACTEMENT : "Parfait! Je vais t'envoyer une confirmation par SMS pour que tu puisses saisir ton courriel. Je t'envoie ça au [numéro formaté]?"
+  → Exemple : "Je t'envoie ça au cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un?"
+  → Si OUI → appelle send_booking_link directement avec ce numéro
+  → Si NON → demande le numéro vocalement (voir ci-dessous)` : `→ Pas de numéro appelant → demande vocalement (voir ci-dessous)`}
 
-COLLECTE VOCALE DU NUMÉRO (si le client refuse son numéro appelant ou si inconnu) :
+COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
   → Dis : "Ok, dis-moi ton numéro de cellulaire."
-  → Écoute attentivement le numéro
   → Appelle normalize_and_confirm_phone avec le numéro entendu
-  → La fonction retourne le numéro formaté — répète-le au client : "J'ai bien le [numéro formaté], c'est ça?"
+  → La fonction retourne le numéro — dis EXACTEMENT :
+    "J'ai bien le [3 premiers chiffres], [3 suivants], [4 derniers] — c'est ça?"
+    Exemple : "J'ai bien le cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un — c'est ça?"
   → Si OUI → appelle send_booking_link
-  → Si NON → redemande le numéro (max 3 tentatives)
+  → Si NON → redemande (max 3 fois)
 
 ÉTAPE 6 — Envoi SMS
   → Appelle send_booking_link avec service + slot_iso + name + phone
@@ -231,6 +234,12 @@ const TOOLS = [
       },
       required: ["service"],
     },
+  },
+  {
+    type: "function",
+    name: "format_caller_number",
+    description: "Formate le numéro appelant pour que Marie puisse le lire à voix haute en groupes de chiffres, sans le 1 initial.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",
@@ -326,6 +335,22 @@ async function runTool(name, args, session) {
     } catch (e) {
       return { error: "Impossible de vérifier les disponibilités." };
     }
+  }
+
+  if (name === "format_caller_number") {
+    const phone = session?.callerNumber || "";
+    const normalized = normalizePhone(phone) || phone;
+    const digits = normalized.replace(/^\+1/, "").replace(/\D/g, "");
+    if (digits.length !== 10) return { error: "Numéro appelant invalide." };
+    const groups = `${digits.slice(0,3)}, ${digits.slice(3,6)}, ${digits.slice(6)}`;
+    const spoken = digits.split("").join("-");
+    const spokenGroups = `${digits.slice(0,3).split("").join("-")}, ${digits.slice(3,6).split("").join("-")}, ${digits.slice(6).split("").join("-")}`;
+    return {
+      phone: normalized,
+      formatted: fmtPhone(normalized),
+      spoken_groups: spokenGroups,
+      message: `Numéro à lire : "${spokenGroups}". Dis exactement : "Je t'envoie ça au ${spokenGroups}?"`,
+    };
   }
 
   if (name === "normalize_and_confirm_phone") {
