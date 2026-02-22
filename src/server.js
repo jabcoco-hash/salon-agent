@@ -166,15 +166,19 @@ NUMÉRO APPELANT (usage interne seulement, ne pas mentionner) : ${callerNumber |
 FLUX RENDEZ-VOUS — étape par étape
 ═══════════════════════════════════
 
-ÉTAPE 1 — Type de coupe
-  → Demande : "C'est pour une coupe homme, femme ou non binaire?"
-  → Attends la réponse. Ne continue pas sans réponse claire.
+ÉTAPE 1 — Comprendre la demande
+  → Écoute la phrase COMPLÈTE du client avant de répondre
+  → Le client peut dire plusieurs infos d'un coup : type de coupe, jour, période
+  → Exemple : "je veux une coupe homme mercredi après-midi" = service:homme, jour:mercredi, periode:après-midi
+  → Si le type de coupe est clair → passe directement à l'étape 2 SANS redemander
+  → Si le type de coupe n'est PAS mentionné → demande : "C'est pour une coupe homme, femme ou non binaire?"
+  → Ne pose JAMAIS une question dont tu as déjà la réponse
 
 ÉTAPE 2 — Disponibilités
-  → Appelle get_available_slots(service)
-  → Dis : "Ok laisse-moi vérifier les disponibilités!" AVANT d'appeler la fonction
-  → Propose max 3 créneaux : "J'ai [jour] à [heure], [jour] à [heure], ou [jour] à [heure] — lequel t'arrange le mieux?"
-  → Si aucune dispo : "Ah, j'ai pas de place cette semaine malheureusement. Essaie de rappeler dans quelques jours!"
+  → Appelle get_available_slots(service, jour?, periode?) avec TOUS les filtres mentionnés par le client
+  → Dis : "Ok laisse-moi vérifier ça!" AVANT d'appeler la fonction
+  → Si des créneaux correspondent : propose-les : "J'ai [jour] à [heure] — ça te convient?"
+  → Si aucune dispo avec le filtre : "Ah, j'ai pas de place mercredi après-midi — par contre j'ai [alternative]. Ça t'irait?"
   → Attends que le client choisisse. Ne choisis pas à sa place.
 
 ÉTAPE 3 — Confirmation créneau
@@ -212,11 +216,20 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux Calendly disponibles pour le type de coupe donné.",
+    description: "Récupère les créneaux Calendly disponibles. Si le client a mentionné un jour ou une période (ex: mercredi, après-midi, vendredi matin), passe-les dans le filtre pour ne retourner que les créneaux correspondants.",
     parameters: {
       type: "object",
       properties: {
         service: { type: "string", enum: ["homme", "femme", "nonbinaire"] },
+        jour: {
+          type: "string",
+          description: "Jour souhaité en français minuscule, ex: 'lundi', 'mercredi', 'vendredi'. Omets si pas mentionné."
+        },
+        periode: {
+          type: "string",
+          enum: ["matin", "après-midi", "soir"],
+          description: "Période de la journée souhaitée. Omets si pas mentionnée."
+        },
       },
       required: ["service"],
     },
@@ -271,11 +284,41 @@ async function runTool(name, args, session) {
     const uri = serviceUri(args.service);
     if (!uri) return { error: "Type de coupe non configuré dans Railway." };
     try {
-      const slots = await getSlots(uri);
+      let slots = await getSlots(uri);
       if (!slots.length) return { disponible: false, message: "Aucune disponibilité cette semaine." };
+
+      // Filtrer par jour si spécifié
+      const JOURS = { lundi:1, mardi:2, mercredi:3, jeudi:4, vendredi:5, samedi:6, dimanche:0 };
+      if (args.jour && JOURS[args.jour.toLowerCase()] !== undefined) {
+        const jourNum = JOURS[args.jour.toLowerCase()];
+        const filtered = slots.filter(iso => {
+          const d = new Date(iso);
+          return d.toLocaleDateString("en-CA", { weekday: "long", timeZone: CALENDLY_TIMEZONE })
+                  !== undefined &&
+                 new Date(iso).toLocaleString("en-CA", { timeZone: CALENDLY_TIMEZONE, weekday: "short" })
+                  .toLowerCase().startsWith(["sun","mon","tue","wed","thu","fri","sat"][jourNum].toLowerCase());
+        });
+        if (filtered.length) slots = filtered;
+        else return { disponible: false, message: `Pas de disponibilité ${args.jour} cette semaine.` };
+      }
+
+      // Filtrer par période si spécifiée
+      if (args.periode) {
+        const periodeFilter = slots.filter(iso => {
+          const hour = new Date(new Date(iso).toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE })).getHours();
+          if (args.periode === "matin")       return hour >= 8  && hour < 12;
+          if (args.periode === "après-midi")  return hour >= 12 && hour < 17;
+          if (args.periode === "soir")        return hour >= 17;
+          return true;
+        });
+        if (periodeFilter.length) slots = periodeFilter;
+        // Si aucun créneau pour cette période, on garde tout plutôt que de dire non
+      }
+
       return {
         disponible: true,
         service: args.service,
+        filtre: { jour: args.jour || null, periode: args.periode || null },
         slots: slots.slice(0, 5).map(iso => ({ iso, label: slotToFrench(iso) })),
       };
     } catch (e) {
