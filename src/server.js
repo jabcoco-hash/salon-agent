@@ -164,11 +164,6 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
   return json;
 }
 
-  const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`Calendly create invitee failed: ${r.status} ${JSON.stringify(json)}`);
-  return json;
-}
-
 async function sendSms(to, body) {
   if (!twilioClient || !TWILIO_CALLER_ID) return;
   await twilioClient.messages.create({ from: TWILIO_CALLER_ID, to, body });
