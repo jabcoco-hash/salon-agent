@@ -210,7 +210,8 @@ app.post("/process", async (req, res) => {
         expiresAt: now() + PENDING_TTL_MS,
         payload: { from: From, name: speech, service: session.data.service, eventTypeUri: session.data.eventTypeUri, startTimeIso: session.data.selectedSlot }
       });
-      const link = `${PUBLIC_BASE_URL}/confirm-email/${token}`;
+      const base = (PUBLIC_BASE_URL || "").replace(/\/$/, "");
+      const link = `${base}/confirm-email/${token}`;
       await sendSms(From, `Lien de confirmation : ${link}`);
       say(twiml, "Merci! Vérifiez vos textos pour confirmer. À bientôt!");
       twiml.hangup();
