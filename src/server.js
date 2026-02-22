@@ -136,20 +136,19 @@ async function calendlyGetAvailableTimes(eventTypeUri, startIso, endIso) {
 }
 
 async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }) {
-  // On ne garde que le strict nécessaire : l'événement, l'heure, le nom et l'email.
+  // On définit un objet propre et fixe. 
+  // On n'utilise PLUS DU TOUT la variable CALENDLY_LOCATION_KIND ici.
   const body = {
     event_type: eventTypeUri,
     start_time: startTimeIso,
     invitee: { 
-      name, 
-      email, 
+      name: name, 
+      email: email, 
       timezone: CALENDLY_TIMEZONE 
-    },
+    }
   };
 
-  // On a COMPLÈTEMENT supprimé le bloc "if (CALENDLY_LOCATION_KIND)" ici.
-  // Calendly utilisera l'adresse "123 Saint-Jacques Ouest" que tu as configurée 
-  // manuellement dans son interface.
+  console.log("Envoi à Calendly sans location:", JSON.stringify(body));
 
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
