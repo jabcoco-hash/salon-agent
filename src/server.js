@@ -560,7 +560,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: `L'appel vient de commencer. Fais ton intro : présente-toi comme l'assistante virtuelle du ${SALON_NAME}, explique en une phrase que tu es là pour que les coiffeurs restent concentrés, et mentionne qu'on peut parler à quelqu'un si besoin. Sois pétillante et reste sous 3 phrases!`,
+          text: `L'appel vient de commencer. Fais ton intro en 2-3 phrases : présente-toi comme l'assistante virtuelle du ${SALON_NAME}, dis que tu es là pour que les coiffeurs restent concentrés, mentionne qu'on peut parler à quelqu'un si besoin. Termine UNIQUEMENT par "Comment puis-je vous aider aujourd'hui?" — puis arrête-toi et attends la réponse du client. Ne pose aucune autre question.`,
         }],
       },
     }));
