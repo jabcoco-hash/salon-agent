@@ -40,7 +40,7 @@ const {
   CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL           = "gpt-4o-realtime-preview-2024-12-17",
-  OPENAI_TTS_VOICE                = "alloy",
+  OPENAI_TTS_VOICE                = "shimmer",
 } = process.env;
 
 // Lecture explicite sans valeur par défaut hardcodée — Railway doit définir ces variables
@@ -575,7 +575,7 @@ wss.on("connection", (twilioWs) => {
         type: "conversation.item.create",
         item: {
           type: "message", role: "user",
-          content: [{ type: "input_text", text: "L'appel commence. Dis bonjour et présente les options." }],
+          content: [{ type: "input_text", text: `L'appel commence. Fais une intro courte et énergique : dis bonjour, présente-toi comme l'assistante virtuelle du Salon Coco, explique en une phrase que tu es là pour que les coiffeurs restent concentrés sur leur travail, et mentionne rapidement que si la personne veut parler à quelqu'un en direct il suffit de le demander. Reste sous 3 phrases, sois pétillante!` }],
         },
       }));
       openaiWs.send(JSON.stringify({ type: "response.create" }));
