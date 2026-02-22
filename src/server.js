@@ -20,7 +20,7 @@ app.post("/twilio/voice", (req, res) => {
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say language="fr-CA" voice="alice">Bonjour! Un instant, je vous transfère au salon.</Say>
+  <Say language="fr-CA" voice="alice">Bonjour! Un instant, je vous transfère au salon de coco.</Say>
   <Dial>${fallbackNumber}</Dial>
   <Say language="fr-CA" voice="alice">Désolé, personne ne répond. Laissez un message après le bip.</Say>
   <Record maxLength="60" playBeep="true" />
