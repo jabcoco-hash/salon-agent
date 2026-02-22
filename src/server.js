@@ -136,8 +136,7 @@ async function calendlyGetAvailableTimes(eventTypeUri, startIso, endIso) {
 }
 
 async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }) {
-  // On définit un objet propre et fixe. 
-  // On n'utilise PLUS DU TOUT la variable CALENDLY_LOCATION_KIND ici.
+  // 1. On crée le body de base sans location
   const body = {
     event_type: eventTypeUri,
     start_time: startTimeIso,
@@ -148,13 +147,29 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     }
   };
 
-  console.log("Envoi à Calendly sans location:", JSON.stringify(body));
+  // 2. On n'ajoute la location QUE si la variable est strictement définie
+  // On vérifie que ce n'est pas vide, pas nul et pas la string "undefined"
+  if (process.env.CALENDLY_LOCATION_KIND && process.env.CALENDLY_LOCATION_KIND !== "undefined") {
+    body.location = { kind: process.env.CALENDLY_LOCATION_KIND };
+    if (process.env.CALENDLY_LOCATION_TEXT) {
+      body.location.location = process.env.CALENDLY_LOCATION_TEXT;
+    }
+  }
+
+  console.log("JSON envoyé à Calendly:", JSON.stringify(body));
 
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
     headers: calendlyHeaders(),
     body: JSON.stringify(body),
   });
+
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(`Calendly create invitee failed: ${r.status} ${JSON.stringify(json)}`);
+  }
+  return json;
+}
 
   const json = await r.json().catch(() => ({}));
   if (!r.ok) {
