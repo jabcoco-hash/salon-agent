@@ -512,9 +512,10 @@ app.post("/phone-collected", (req, res) => {
 wss.on("connection", (twilioWs) => {
   console.log("[WS] Nouvelle connexion Twilio");
 
-  let openaiWs      = null;
-  let streamSid     = null;
-  let callSid       = null; // notre clé interne (streamSid au départ, puis stabilisé)
+  let openaiWs         = null;
+  let streamSid        = null;
+  let callSid          = null;
+  let heartbeatInterval = null;
   let isResuming    = false;
   let callState     = { callerNumber: "", shouldTransfer: false };
   let pendingTools  = new Map();
@@ -574,6 +575,15 @@ wss.on("connection", (twilioWs) => {
 
   openaiWs.on("open", () => {
     console.log("[OpenAI] WebSocket ouvert — attente du message start Twilio");
+
+    // Heartbeat toutes les 10s pour garder la connexion WebSocket vivante sur Railway
+    heartbeatInterval = setInterval(() => {
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.ping();
+      } else {
+        clearInterval(heartbeatInterval);
+      }
+    }, 10_000);
   });
 
   // ── Messages OpenAI ────────────────────────────────────────────────────
@@ -649,7 +659,10 @@ wss.on("connection", (twilioWs) => {
     }
   });
 
-  openaiWs.on("close",  (c) => console.log(`[OpenAI] Fermé (${c})`));
+  openaiWs.on("close", (c) => {
+    console.log(`[OpenAI] Fermé (${c})`);
+    clearInterval(heartbeatInterval);
+  });
   openaiWs.on("error",  (e) => console.error("[OpenAI WS]", e.message));
 
   // ── Messages Twilio ────────────────────────────────────────────────────
@@ -723,6 +736,7 @@ wss.on("connection", (twilioWs) => {
 
   twilioWs.on("close", () => {
     console.log("[Twilio] WS fermé");
+    clearInterval(heartbeatInterval);
     if (!isResuming) openaiWs?.close();
   });
 
