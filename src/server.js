@@ -204,7 +204,12 @@ FLUX RENDEZ-VOUS — suis cet ordre EXACTEMENT, ne saute AUCUNE étape :
    → Si le client confirme → appelle send_booking_link
    → Si le client dit non → appelle collect_phone_dtmf à nouveau
 7. Appelle send_booking_link avec le numéro confirmé
-8. Dis : "Parfait! J'ai envoyé un lien par texto au [phone_display]. Cliquez dessus pour entrer votre courriel et votre rendez-vous sera confirmé. Bonne journée!"
+8. Quand send_booking_link retourne success:true, dis EXACTEMENT cette phrase de clôture :
+   "Super! J'ai envoyé un lien par texto au [phone_display]. Cliquez dessus pour entrer votre courriel et votre rendez-vous sera confirmé. Au revoir et bonne journée!"
+   → Après cette phrase, la conversation est TERMINÉE — NE fais rien d'autre
+   → NE transfère PAS à un agent
+   → NE pose PAS d'autre question
+   → Attends simplement que le client raccroche
 
 RÈGLES :
 - NE demande JAMAIS l'email par téléphone
@@ -212,7 +217,10 @@ RÈGLES :
 - NE continue PAS si le client est silencieux — attends sa réponse, ne choisis pas à sa place
 - Si le client ne répond pas à une proposition de créneaux, redemande : "Lequel vous convient le mieux, le 1, 2 ou 3?"
 - Appelle send_booking_link IMMÉDIATEMENT après avoir confirmé le numéro
-- Si transfert demandé → transfer_to_agent
+- N'appelle transfer_to_agent QUE si le client demande EXPLICITEMENT à parler à une personne
+   → "je veux parler à quelqu'un", "passe-moi un humain", "agent", etc.
+   → JAMAIS après un send_booking_link réussi
+   → JAMAIS parce que la conversation semble terminée
 - "l'heure" dans une réponse = le client parle des créneaux, PAS une question sur les heures d'ouverture`;
 }
 
@@ -288,7 +296,8 @@ async function executeTool(name, args, callState, callSid) {
   }
 
   // ── collect_phone_dtmf ────────────────────────────────────────────────────
-  // On crée une Promise qui sera résolue quand /phone-collected reçoit les chiffres
+  // Approche : on stocke la Promise indexée par twilioCallSid (stable)
+  // /phone-collected reçoit req.body.CallSid de Twilio = même twilioCallSid
   if (name === "collect_phone_dtmf") {
     return new Promise((resolve) => {
       const session = callSessions.get(callSid);
@@ -297,44 +306,31 @@ async function executeTool(name, args, callState, callSid) {
         return;
       }
 
-      console.log(`[DTMF] En attente des chiffres pour ${callSid}`);
+      const tCallSid = session.twilioCallSid;
+      console.log(`[DTMF] En attente — twilioCallSid: ${tCallSid}`);
 
-      // Stocker la callback pour que /phone-collected puisse la résoudre
-      dtmfPending.set(callSid, { resolve, callId: null });
+      // Indexer par twilioCallSid — c'est ce que Twilio envoie dans req.body.CallSid
+      dtmfPending.set(tCallSid, { resolve, openaiWs: session.openaiWs, callState: session.callState });
 
-      // Sauvegarder la session OpenAI avec twilioCallSid comme clé stable
-      const currentSession = callSessions.get(callSid);
-      if (currentSession) {
-        const resumeKey = `dtmf_resume_${currentSession.twilioCallSid}`;
-        callSessions.set(resumeKey, currentSession);
-        console.log(`[DTMF] Session OpenAI sauvegardée sous ${resumeKey} (twilioCallSid: ${currentSession.twilioCallSid})`);
-      } else {
-        console.warn(`[DTMF] ⚠️ Session introuvable pour callSid: ${callSid} — impossible de sauvegarder`);
-      }
-
-      // Rediriger Twilio vers /collect-phone via Twilio REST API
-      // (on ne peut pas envoyer de TwiML depuis un WebSocket — on doit
-      //  modifier l'appel actif via l'API REST Twilio)
-      if (twilioClient && session.twilioCallSid) {
-        const collectUrl = `${publicBase()}/collect-phone?callSid=${encodeURIComponent(callSid)}`;
-        twilioClient.calls(session.twilioCallSid)
+      // Rediriger l'appel Twilio vers la page DTMF
+      if (twilioClient && tCallSid) {
+        const collectUrl = `${publicBase()}/collect-phone`;
+        twilioClient.calls(tCallSid)
           .update({ url: collectUrl, method: "POST" })
-          .then(() => console.log(`[DTMF] Appel redirigé vers ${collectUrl}`))
+          .then(() => console.log(`[DTMF] ✅ Appel redirigé vers ${collectUrl}`))
           .catch(e => {
             console.error("[DTMF] Erreur redirection:", e.message);
-            dtmfPending.delete(callSid);
-            resolve({ error: "Impossible de rediriger l'appel pour la saisie DTMF." });
+            dtmfPending.delete(tCallSid);
+            resolve({ error: "Impossible de rediriger l'appel." });
           });
       } else {
-        console.error("[DTMF] twilioClient ou twilioCallSid manquant");
-        resolve({ error: "Configuration Twilio manquante." });
+        resolve({ error: "twilioCallSid manquant." });
       }
 
-      // Timeout de sécurité : 45 secondes
+      // Timeout 45s
       setTimeout(() => {
-        if (dtmfPending.has(callSid)) {
-          console.warn(`[DTMF] Timeout pour ${callSid}`);
-          dtmfPending.delete(callSid);
+        if (dtmfPending.has(tCallSid)) {
+          dtmfPending.delete(tCallSid);
           resolve({ error: "Délai dépassé — le client n'a pas saisi son numéro." });
         }
       }, 45_000);
@@ -451,46 +447,50 @@ app.post("/voice", (req, res) => {
 });
 
 // Page DTMF : Twilio redirige ici pour collecter le numéro
+// req.body.CallSid = twilioCallSid envoyé automatiquement par Twilio
 app.post("/collect-phone", (req, res) => {
-  const callSid = req.query.callSid || "";
-  console.log(`[DTMF] /collect-phone — callSid: ${callSid}`);
+  const tCallSid = req.body.CallSid || "";
+  console.log(`[DTMF] /collect-phone — twilioCallSid: ${tCallSid}`);
 
-  const twiml = new twilio.twiml.VoiceResponse();
+  const twiml  = new twilio.twiml.VoiceResponse();
   const gather = twiml.gather({
-    input:          "dtmf",
-    numDigits:      10,
-    timeout:        15,
-    finishOnKey:    "#",
-    action:         `${publicBase()}/phone-collected?callSid=${encodeURIComponent(callSid)}`,
-    method:         "POST",
+    input:       "dtmf",
+    numDigits:   10,
+    timeout:     15,
+    finishOnKey: "#",
+    action:      `${publicBase()}/phone-collected`,
+    method:      "POST",
   });
   gather.say({ language: "fr-CA", voice: "alice" },
     "Veuillez taper votre numéro de cellulaire à dix chiffres, puis appuyez sur le dièse."
   );
-
-  // Si aucune touche en 15s
+  // Timeout — résoudre la Promise avec erreur et reprendre le stream
   twiml.say({ language: "fr-CA", voice: "alice" },
     "Je n'ai pas reçu de numéro. Je vous retourne à Marie."
   );
-  twiml.redirect({
-    method: "POST",
-  }, `${publicBase()}/resume-stream?callSid=${encodeURIComponent(callSid)}&error=timeout`);
+  // Reprendre le stream même en cas de timeout
+  const wsUrl = publicBase().replace(/^https/, "wss").replace(/^http/, "ws");
+  const connect2 = twiml.connect();
+  const stream2 = connect2.stream({ url: `${wsUrl}/media-stream` });
+  stream2.parameter({ name: "twilioCallSid", value: tCallSid });
+  stream2.parameter({ name: "resumeSession", value: "true" });
 
   res.type("text/xml").send(twiml.toString());
 });
 
 // Réception des chiffres DTMF
+// req.body.CallSid = twilioCallSid — même valeur que dans dtmfPending
 app.post("/phone-collected", (req, res) => {
-  const callSid = req.query.callSid || "";
-  const digits  = (req.body.Digits || "").replace(/\D/g, "");
+  const tCallSid = req.body.CallSid || "";
+  const digits   = (req.body.Digits || "").replace(/\D/g, "");
 
-  console.log(`[DTMF] /phone-collected — callSid: ${callSid} — digits: ${digits}`);
+  console.log(`[DTMF] /phone-collected — twilioCallSid: ${tCallSid} — digits: ${digits}`);
 
   const phone = normalizePhone(digits);
-  const entry = dtmfPending.get(callSid);
+  const entry = dtmfPending.get(tCallSid);
 
   if (entry) {
-    dtmfPending.delete(callSid);
+    dtmfPending.delete(tCallSid);
     if (phone) {
       console.log(`[DTMF] ✅ Numéro validé: ${phone}`);
       entry.resolve({
@@ -505,18 +505,17 @@ app.post("/phone-collected", (req, res) => {
       });
     }
   } else {
-    console.warn(`[DTMF] Aucune entrée pending pour ${callSid}`);
+    console.warn(`[DTMF] ⚠️ Aucune entrée pending pour twilioCallSid: ${tCallSid}`);
+    console.warn(`[DTMF] Clés disponibles: ${[...dtmfPending.keys()].join(", ") || "aucune"}`);
   }
 
-  // Reprendre le stream OpenAI Realtime
-  const twiml = new twilio.twiml.VoiceResponse();
-  const connect = twiml.connect();
+  // Reprendre le stream OpenAI — avec le twilioCallSid comme paramètre
+  // Le handler WebSocket "start" utilisera ce callSid pour retrouver la session
   const wsUrl   = publicBase().replace(/^https/, "wss").replace(/^http/, "ws");
+  const twiml   = new twilio.twiml.VoiceResponse();
+  const connect = twiml.connect();
   const stream  = connect.stream({ url: `${wsUrl}/media-stream` });
-
-  const session = callSessions.get(callSid);
-  stream.parameter({ name: "callerNumber",  value: session?.callerNumber  || "" });
-  stream.parameter({ name: "twilioCallSid", value: session?.twilioCallSid || "" });
+  stream.parameter({ name: "twilioCallSid", value: tCallSid });
   stream.parameter({ name: "resumeSession", value: "true" });
 
   res.type("text/xml").send(twiml.toString());
@@ -578,7 +577,7 @@ wss.on("connection", (twilioWs) => {
         type: "conversation.item.create",
         item: {
           type: "message", role: "user",
-          content: [{ type: "input_text", text: `L'appel commence. Fais une intro courte et énergique : dis bonjour, présente-toi comme l'assistante virtuelle du Salon Coco, explique en une phrase que tu es là pour que les coiffeurs restent concentrés sur leur travail, et mentionne rapidement que si la personne veut parler à quelqu'un en direct il suffit de le demander. Reste sous 3 phrases, sois pétillante!` }],
+          content: [{ type: "input_text", text: "L'appel commence. Dis exactement quelque chose comme : 'Bonjour bonjour! Vous avez rejoint le Salon Coco de Magog Beach — moi c\'est Marie, votre assistante virtuelle! Je suis là pour que nos supers coiffeurs restent focus à vous gâter! Si vous voulez parler à quelqu\'un en personne, dites-le moi n\'importe quand — sinon, comment je peux vous aider aujourd\'hui?' Sois ULTRA enthousiaste, souriante, pétillante!" }],
         },
       }));
       openaiWs.send(JSON.stringify({ type: "response.create" }));
