@@ -142,9 +142,9 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     invitee: { name, email, timezone: CALENDLY_TIMEZONE },
   };
 
-  // ON COUPE CETTE SECTION : C'est elle qui cause l'erreur 400.
-  // En ne pas envoyant d'objet "location", Calendly utilisera 
-  // la config par défaut de ton type d'événement.
+  /* FORCE DISABLE: On commente ce bloc car il cause l'erreur 400.
+     Calendly utilisera la localisation configurée dans ton tableau de bord Calendly.
+  */
   /*
   if (CALENDLY_LOCATION_KIND) {
     body.location = { kind: CALENDLY_LOCATION_KIND };
