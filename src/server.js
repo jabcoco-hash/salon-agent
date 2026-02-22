@@ -340,14 +340,17 @@ async function runTool(name, args, session) {
 
       const collectUrl = `${base()}/collect-phone?sid=${encodeURIComponent(session.twilioCallSid)}`;
 
-      twilioClient.calls(session.twilioCallSid)
-        .update({ url: collectUrl, method: "POST" })
-        .then(() => console.log(`[DTMF] ✅ Appel redirigé vers ${collectUrl}`))
-        .catch(e => {
-          console.error("[DTMF] ❌ Erreur redirection:", e.message);
-          delete session.dtmfResolve;
-          resolve({ error: "Impossible de rediriger l'appel." });
-        });
+      // Délai de 4s pour laisser Marie finir sa phrase avant que Twilio redirige
+      setTimeout(() => {
+        twilioClient.calls(session.twilioCallSid)
+          .update({ url: collectUrl, method: "POST" })
+          .then(() => console.log(`[DTMF] ✅ Appel redirigé vers ${collectUrl}`))
+          .catch(e => {
+            console.error("[DTMF] ❌ Erreur redirection:", e.message);
+            delete session.dtmfResolve;
+            resolve({ error: "Impossible de rediriger l'appel." });
+          });
+      }, 4000);
 
       // Timeout 60s
       setTimeout(() => {
@@ -730,10 +733,21 @@ wss.on("connection", (twilioWs) => {
         session.streamSid = streamSid;
 
         if (isResume) {
-          // REPRISE post-DTMF : OpenAI est déjà configuré, la Promise est résolue
-          // L'audio reprend naturellement — OpenAI reçoit le function_call_output
-          // et continue la conversation sans réinitialisation
-          console.log("[Twilio] ✅ Reprise post-DTMF — pas de réinitialisation OpenAI");
+          console.log("[Twilio] ✅ Reprise post-DTMF — injection du message de reprise");
+          // OpenAI a déjà reçu le function_call_output via la Promise
+          // On injecte un nudge pour qu'il reprenne la conversation
+          setTimeout(() => {
+            if (oaiWs?.readyState === WebSocket.OPEN) {
+              oaiWs.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                  type: "message", role: "user",
+                  content: [{ type: "input_text", text: "Tu viens de recevoir le numéro du client. Continue la conversation normalement — appelle send_booking_link si ce n'est pas encore fait, puis demande si tu peux faire autre chose." }],
+                },
+              }));
+              oaiWs.send(JSON.stringify({ type: "response.create" }));
+            }
+          }, 1000); // délai pour laisser le function_call_output arriver en premier
         } else {
           // NOUVELLE connexion : initialiser OpenAI
           if (oaiWs.readyState === WebSocket.OPEN) {
