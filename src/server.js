@@ -25,7 +25,7 @@ const {
   TTS_VOICE              = "alice",
   SALON_ADDRESS          = "123 Saint-Jacques Ouest, Montréal",
   SALON_HOURS            = "lundi au vendredi de 9h à 17h",
-  SALON_PRICE_LIST       = "Coupe homme : 25 $. Coupe femme : 45 $. Coupe non binaire : 35 $.",
+  SALON_PRICE_LIST       = "Coupe homme : 25 $. Coupe femme : 45 $. Coupe non binaire : 450 $.",
 } = process.env;
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
@@ -589,8 +589,8 @@ app.post("/confirm-email/:token", async (req, res) => {
       `✂️ Service    : ${labelForService(service)}\n` +
       `📅 Date/heure : ${slotLabel}\n` +
       `📍 Adresse    : ${SALON_ADDRESS}\n\n` +
-      (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}\n` : "") +
-      (cancelUrl     ? `❌ Annuler  : ${cancelUrl}\n`     : "") +
+      (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}\n` : "Cliquer ici") +
+      (cancelUrl     ? `❌ Annuler  : ${cancelUrl}\n`     : "Cliquer ici") +
       `\nNous avons hâte de vous accueillir! — Salon Coco`
     );
 
