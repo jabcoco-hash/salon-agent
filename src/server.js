@@ -47,6 +47,36 @@ function isBooking(text = "") {
   );
 }
 
+function isPrice(text = "") {
+  const t = text.toLowerCase();
+  return (
+    t.includes("prix") ||
+    t.includes("coût") ||
+    t.includes("combien") ||
+    t.includes("tarif")
+  );
+}
+
+function isHours(text = "") {
+  const t = text.toLowerCase();
+  return (
+    t.includes("horaire") ||
+    t.includes("heure") ||
+    t.includes("ouvert") ||
+    t.includes("fermé")
+  );
+}
+
+function isAddress(text = "") {
+  const t = text.toLowerCase();
+  return (
+    t.includes("adresse") ||
+    t.includes("où") ||
+    t.includes("ou êtes") ||
+    t.includes("situé")
+  );
+}
+
 app.get("/", (req, res) => {
   res.json({ ok: true, service: "salon-agent-mvp-openai", lang: LANG });
 });
@@ -137,6 +167,36 @@ app.post("/process", async (req, res) => {
       return res.type("text/xml").send(twiml.toString());
     }
 
+      // 3) FAQ locale - PRIX
+  if (isPrice(userText)) {
+    twiml.say(
+      { language: LANG },
+      "Voici nos prix. Coupe homme 25 dollars. Coupe femme 45 dollars. Coupe non binaire 250 dollars."
+    );
+    twiml.redirect({ method: "POST" }, "/voice");
+    return res.type("text/xml").send(twiml.toString());
+  }
+  
+  // 4) FAQ locale - HORAIRE
+  if (isHours(userText)) {
+    twiml.say(
+      { language: LANG },
+      "Nous sommes ouverts du lundi au vendredi de 9h à 18h. Le samedi de 10h à 14h. Nous sommes fermés le dimanche."
+    );
+    twiml.redirect({ method: "POST" }, "/voice");
+    return res.type("text/xml").send(twiml.toString());
+  }
+  
+  // 5) FAQ locale - ADRESSE
+  if (isAddress(userText)) {
+    twiml.say(
+      { language: LANG },
+      "Nous sommes situés au 123 rue des salons test, à Magog."
+    );
+    twiml.redirect({ method: "POST" }, "/voice");
+    return res.type("text/xml").send(twiml.toString());
+  }
+    
     // ✅ Si OpenAI pas configuré, fallback sur règles simples actuelles
     if (!openai) {
       if (isBooking(userText)) {
