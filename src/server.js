@@ -111,8 +111,8 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     invitee: { name, email, timezone: CALENDLY_TIMEZONE }
   };
 
-  // Sécurité renforcée pour éviter l'erreur 400
-  if (CALENDLY_LOCATION_KIND && CALENDLY_LOCATION_KIND !== "" && CALENDLY_LOCATION_KIND !== "undefined") {
+  // On n'ajoute la location que si elle est strictement définie pour éviter l'erreur 400
+  if (CALENDLY_LOCATION_KIND && CALENDLY_LOCATION_KIND !== "undefined" && CALENDLY_LOCATION_KIND !== "") {
     body.location = { kind: CALENDLY_LOCATION_KIND };
     if (CALENDLY_LOCATION_TEXT) body.location.location = CALENDLY_LOCATION_TEXT;
   }
@@ -151,14 +151,17 @@ async function parseServiceIntent(text) {
 
   const r = await openai.chat.completions.create({
     model: OPENAI_MODEL,
-    messages: [{ role: "system", content: 'JSON only: {"service":"homme|femme|nonbinaire|null"}' }, { role: "user", content: text }],
+    messages: [
+      { role: "system", content: 'Return JSON only: {"service":"homme|femme|nonbinaire|null"}' },
+      { role: "user", content: text }
+    ],
     response_format: { type: "json_object" }
   });
   return JSON.parse(r.choices[0].message.content);
 }
 
 // Routes
-app.get("/", (req, res) => res.json({ ok: true }));
+app.get("/", (req, res) => res.json({ ok: true, status: "stable" }));
 
 app.post("/voice", (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
@@ -169,11 +172,9 @@ app.post("/voice", (req, res) => {
 
 app.post("/process", async (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
-  const callSid = req.body.CallSid;
-  const from = req.body.From;
-  const speech = (req.body.SpeechResult || "").trim();
-  const digits = req.body.Digits;
-  const session = getSession(callSid);
+  const { CallSid, From, SpeechResult, Digits } = req.body;
+  const speech = (SpeechResult || "").trim();
+  const session = getSession(CallSid);
 
   try {
     if (speech && isHumanRequest(speech)) {
@@ -183,7 +184,7 @@ app.post("/process", async (req, res) => {
     }
 
     if (session.state === "choose_slot") {
-      const idx = parseInt(digits, 10);
+      const idx = parseInt(Digits, 10);
       const slots = session.data.slots || [];
       if (![1, 2, 3].includes(idx) || !slots[idx - 1]) {
         const g = twiml.gather({ input: "dtmf", numDigits: 1, action: "/process" });
@@ -200,15 +201,69 @@ app.post("/process", async (req, res) => {
     if (session.state === "collect_name") {
       if (!speech) {
         const g = twiml.gather({ input: "speech", action: "/process", language: LANG });
-        say(g, "Je n'ai pas entendu. Votre nom svp?");
+        say(g, "Je n'ai pas entendu votre nom.");
         return res.type("text/xml").send(twiml.toString());
       }
       session.data.name = speech;
       const token = crypto.randomBytes(16).toString("hex");
       pending.set(token, {
         expiresAt: now() + PENDING_TTL_MS,
-        payload: { from, name: speech, service: session.data.service, eventTypeUri: session.data.eventTypeUri, startTimeIso: session.data.selectedSlot }
+        payload: { from: From, name: speech, service: session.data.service, eventTypeUri: session.data.eventTypeUri, startTimeIso: session.data.selectedSlot }
       });
       const link = `${PUBLIC_BASE_URL}/confirm-email/${token}`;
-      await sendSms(from, `Lien de confirmation : ${link}`);
-      say
+      await sendSms(From, `Lien de confirmation : ${link}`);
+      say(twiml, "Merci! Vérifiez vos textos pour confirmer. À bientôt!");
+      twiml.hangup();
+      resetSession(CallSid);
+      return res.type("text/xml").send(twiml.toString());
+    }
+
+    const parsed = await parseServiceIntent(speech);
+    if (!parsed.service) {
+      say(twiml, "Désolé, je n'ai pas compris. Coupe homme ou femme?");
+      twiml.redirect("/voice");
+      return res.type("text/xml").send(twiml.toString());
+    }
+
+    const eventTypeUri = eventTypeUriForService(parsed.service);
+    const { startIso, endIso } = computeWindow7Days();
+    const slots = await calendlyGetAvailableTimes(eventTypeUri, startIso, endIso);
+    
+    session.state = "choose_slot";
+    session.data = { service: parsed.service, eventTypeUri, slots: slots.slice(0, 3) };
+
+    const g = twiml.gather({ input: "dtmf", numDigits: 1, action: "/process" });
+    say(g, `Pour une ${labelForService(parsed.service)}, appuyez sur 1 pour ${slotToFrench(slots[0])}, 2 pour ${slotToFrench(slots[1])}, ou 3 pour ${slotToFrench(slots[2])}.`);
+    res.type("text/xml").send(twiml.toString());
+
+  } catch (e) {
+    console.error(e);
+    say(twiml, "Petit pépin, je vous transfère.");
+    twiml.dial(FALLBACK_NUMBER);
+    res.type("text/xml").send(twiml.toString());
+  }
+});
+
+app.get("/confirm-email/:token", (req, res) => {
+  const entry = pending.get(req.params.token);
+  if (!entry || entry.expiresAt < now()) return res.status(410).send("Lien expiré.");
+  res.setHeader("Content-Type", "text/html");
+  res.send(`<html><body style="font-family:sans-serif;padding:20px;"><h2>Confirmer Email</h2><form method="POST"><input name="email" type="email" required style="padding:10px;width:100%"/><br><br><button style="padding:10px">Confirmer le RDV</button></form></body></html>`);
+});
+
+app.post("/confirm-email/:token", async (req, res) => {
+  const entry = pending.get(req.params.token);
+  if (!entry) return res.status(410).send("Lien expiré.");
+  try {
+    const { eventTypeUri, startTimeIso, name, from } = entry.payload;
+    await calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email: req.body.email });
+    await sendSms(from, "✅ Ton rendez-vous est confirmé dans notre calendrier !");
+    res.send("<h1>C'est confirmé ! Vous pouvez fermer cette page.</h1>");
+  } catch (e) { 
+    console.error(e);
+    res.status(500).send("Erreur lors de la création Calendly."); 
+  }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Serveur prêt sur le port ${port}`));
