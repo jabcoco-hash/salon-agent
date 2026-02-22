@@ -173,9 +173,12 @@ async function sendSms(to, body) {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 function buildSystemPrompt(callerNumber) {
-  return `Tu es Marie, l'assistante virtuelle chaleureuse du Salon Coco à ${SALON_CITY}.
-Tu parles en français québécois, ton ton est naturel, amical et concis.
+  return `Tu es Marie, la réceptionniste vedette du Salon Coco à ${SALON_CITY}!
+Tu ADORES ton travail et ça s'entend dans chaque mot. Tu es énergique, pétillante, et tu mets les clients de bonne humeur instantanément.
+Tu parles en français québécois authentique — naturel, vivant, avec de l'énergie.
+Tu utilises des expressions chaleureuses comme "Super!", "Parfait!", "Excellent choix!", "Avec plaisir!", "Génial!".
 Maximum 2-3 phrases par réponse. Une seule question à la fois.
+Ton énergie est contagieuse — les clients raccrochent en souriant.
 
 INFOS DU SALON :
 - Adresse : ${SALON_ADDRESS}
@@ -297,6 +300,14 @@ async function executeTool(name, args, callState, callSid) {
 
       // Stocker la callback pour que /phone-collected puisse la résoudre
       dtmfPending.set(callSid, { resolve, callId: null });
+
+      // Sauvegarder la session OpenAI avec clé callerNumber pour la retrouver au resume
+      const currentSession = callSessions.get(callSid);
+      if (currentSession) {
+        const resumeKey = `dtmf_resume_${currentSession.callerNumber}`;
+        callSessions.set(resumeKey, currentSession);
+        console.log(`[DTMF] Session OpenAI sauvegardée sous ${resumeKey}`);
+      }
 
       // Rediriger Twilio vers /collect-phone via Twilio REST API
       // (on ne peut pas envoyer de TwiML depuis un WebSocket — on doit
@@ -692,28 +703,71 @@ wss.on("connection", (twilioWs) => {
           callSessions.delete(pendingKey);
         }
 
-        callSessions.set(callSid, {
-          openaiWs,
-          callState,
-          streamSid,
-          twilioCallSid: twilioCallSid || existingSession?.twilioCallSid || "",
-          callerNumber:  callState.callerNumber,
-        });
-
-        // Si c'est un resume post-DTMF, mettre à jour la session existante
         if (isResuming) {
-          // Retrouver l'ancienne session par callerNumber pour migrer le dtmfPending
-          console.log(`[Twilio] Resume stream — ${streamSid}`);
-          // La Promise collect_phone_dtmf est déjà résolue via /phone-collected
-          // OpenAI va recevoir le function_call_output et continuer
-        } else {
-          console.log(`[Twilio] Nouveau stream — ${streamSid} — caller: ${callState.callerNumber}`);
-        }
+          // ── REPRISE POST-DTMF ─────────────────────────────────────────
+          // Retrouver la session existante via callerNumber
+          console.log(`[Twilio] Resume stream — ${streamSid} — caller: ${callState.callerNumber}`);
 
-        if (openaiWs.readyState === WebSocket.OPEN) {
-          initSession(isResuming);
+          const resumeKey = `dtmf_resume_${callState.callerNumber}`;
+          const savedSession = callSessions.get(resumeKey);
+
+          if (savedSession && savedSession.openaiWs?.readyState === WebSocket.OPEN) {
+            // Réutiliser le WebSocket OpenAI existant — contexte de conversation préservé
+            console.log("[Twilio] ✅ Session OpenAI retrouvée — réutilisation en cours");
+
+            // Remplacer openaiWs local par celui de la session sauvegardée
+            openaiWs = savedSession.openaiWs;
+            callState = savedSession.callState;
+
+            // Fermer le nouveau WebSocket OpenAI inutile qu'on vient de créer
+            // (on ne peut pas l'annuler mais on peut l'ignorer)
+
+            callSessions.delete(resumeKey);
+            callSessions.set(streamSid, {
+              openaiWs,
+              callState,
+              streamSid,
+              twilioCallSid: savedSession.twilioCallSid || twilioCallSid,
+              callerNumber:  callState.callerNumber,
+            });
+
+            // Rerouter l'audio Twilio vers ce WebSocket OpenAI existant
+            // Pas besoin d'initSession — la conversation continue naturellement
+            // La Promise collect_phone_dtmf a déjà été résolue dans /phone-collected
+            // OpenAI va recevoir le function_call_output via executeTool et continuer
+
+          } else {
+            // Session perdue (timeout, crash) — recréer proprement
+            console.warn("[Twilio] ⚠️ Session OpenAI non trouvée au resume — nouvelle session");
+            callSessions.set(callSid, {
+              openaiWs, callState, streamSid,
+              twilioCallSid: twilioCallSid,
+              callerNumber:  callState.callerNumber,
+            });
+            if (openaiWs.readyState === WebSocket.OPEN) {
+              initSession(false);
+            } else {
+              openaiWs.once("open", () => initSession(false));
+            }
+          }
+
         } else {
-          openaiWs.once("open", () => initSession(isResuming));
+          // ── PREMIÈRE CONNEXION ────────────────────────────────────────
+          console.log(`[Twilio] Nouveau stream — ${streamSid} — caller: ${callState.callerNumber}`);
+
+          callSessions.set(callSid, {
+            openaiWs,
+            callState,
+            streamSid,
+            twilioCallSid: twilioCallSid || existingSession?.twilioCallSid || "",
+            callerNumber:  callState.callerNumber,
+          });
+
+          if (openaiWs.readyState === WebSocket.OPEN) {
+            initSession(false);
+          } else {
+            openaiWs.once("open", () => initSession(false));
+          }
         }
         break;
       }
