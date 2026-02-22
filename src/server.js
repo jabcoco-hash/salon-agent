@@ -108,6 +108,8 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     invitee: { name, email, timezone: CALENDLY_TIMEZONE },
   };
 
+  console.log("BODY ENVOYÉ À CALENDLY:", JSON.stringify(body));
+  
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
     headers: calendlyHeaders(),
