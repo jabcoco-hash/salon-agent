@@ -41,10 +41,19 @@ const {
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL           = "gpt-4o-realtime-preview-2024-12-17",
   OPENAI_TTS_VOICE                = "shimmer",
-  SALON_ADDRESS,
-  SALON_HOURS,
-  SALON_PRICE_LIST,
 } = process.env;
+
+// Lecture explicite sans valeur par défaut hardcodée — Railway doit définir ces variables
+// On nettoie les guillemets/espaces invisibles qui peuvent s'y glisser
+function envStr(key, fallback = "") {
+  const val = process.env[key];
+  if (!val || val.trim() === "") return fallback;
+  return val.trim().replace(/^["']|["']$/g, ""); // enlève guillemets éventuels
+}
+
+const SALON_ADDRESS   = envStr("SALON_ADDRESS",   "Adresse non configurée — définir SALON_ADDRESS dans Railway");
+const SALON_HOURS     = envStr("SALON_HOURS",     "Heures non configurées — définir SALON_HOURS dans Railway");
+const SALON_PRICE_LIST = envStr("SALON_PRICE_LIST", "Prix non configurés — définir SALON_PRICE_LIST dans Railway");
 
 const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
@@ -373,6 +382,26 @@ async function executeTool(name, args, callState, callSid) {
 
 // ─── Routes HTTP ──────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ ok: true, salon: "Salon Coco" }));
+
+// Debug temporaire — retire cette route une fois les variables confirmées
+app.get("/debug-env", (req, res) => {
+  res.json({
+    SALON_ADDRESS,
+    SALON_HOURS,
+    SALON_PRICE_LIST,
+    CALENDLY_TIMEZONE,
+    OPENAI_TTS_VOICE,
+    PUBLIC_BASE_URL:    publicBase(),
+    TWILIO_CALLER_ID:   TWILIO_CALLER_ID   ? '✅ défini' : '❌ manquant',
+    CALENDLY_API_TOKEN: CALENDLY_API_TOKEN ? '✅ défini' : '❌ manquant',
+    OPENAI_API_KEY:     OPENAI_API_KEY     ? '✅ défini' : '❌ manquant',
+    _raw: {
+      SALON_ADDRESS:    process.env.SALON_ADDRESS    || '(vide)',
+      SALON_HOURS:      process.env.SALON_HOURS      || '(vide)',
+      SALON_PRICE_LIST: process.env.SALON_PRICE_LIST || '(vide)',
+    },
+  });
+});
 
 // Entrée d'appel Twilio
 app.post("/voice", (req, res) => {
