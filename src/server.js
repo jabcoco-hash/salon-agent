@@ -111,12 +111,6 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
     invitee: { name, email, timezone: CALENDLY_TIMEZONE }
   };
 
-  // On n'ajoute la location que si elle est strictement définie pour éviter l'erreur 400
-  if (CALENDLY_LOCATION_KIND && CALENDLY_LOCATION_KIND !== "undefined" && CALENDLY_LOCATION_KIND !== "") {
-    body.location = { kind: CALENDLY_LOCATION_KIND };
-    if (CALENDLY_LOCATION_TEXT) body.location.location = CALENDLY_LOCATION_TEXT;
-  }
-
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
     headers: calendlyHeaders(),
