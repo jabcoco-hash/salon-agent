@@ -1,20 +1,23 @@
 /**
- * Salon Coco — Agent téléphonique IA
- * Architecture : Twilio Media Streams ↔ OpenAI Realtime API (gpt-4o-realtime-preview)
+ * Salon Coco — Agent téléphonique IA v7
+ * Architecture : Twilio Media Streams ↔ OpenAI Realtime API
  *
- * Flux :
- *  1. Appel entrant → Twilio → POST /voice → TwiML <Stream> vers /media-stream
- *  2. WebSocket Twilio ↔ serveur ↔ WebSocket OpenAI Realtime
- *  3. OpenAI gère la conversation et appelle des fonctions (Calendly, SMS, etc.)
- *  4. Le serveur exécute les fonctions et retourne les résultats à OpenAI
- *  5. OpenAI répond en audio → Twilio → client
+ * Particularité : collecte du numéro de téléphone par DTMF (touches clavier)
+ * pour éviter les erreurs de transcription vocale.
+ *
+ * Flux DTMF :
+ *  1. OpenAI appelle collect_phone_dtmf → serveur met le callSid en attente DTMF
+ *  2. Twilio reçoit l'instruction de rediriger vers /collect-phone (via Twilio REST)
+ *  3. /collect-phone retourne un TwiML <Gather> qui capture 10 chiffres
+ *  4. /phone-collected reçoit les chiffres, valide, stocke dans dtmfPending
+ *  5. OpenAI Realtime reçoit le résultat via function_call_output et continue
  */
 
-import express         from "express";
-import crypto          from "crypto";
+import express          from "express";
+import crypto           from "crypto";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import twilio          from "twilio";
+import twilio           from "twilio";
 
 const app        = express();
 const httpServer = createServer(app);
@@ -38,9 +41,9 @@ const {
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL           = "gpt-4o-realtime-preview-2024-12-17",
   OPENAI_TTS_VOICE                = "shimmer",
-  SALON_ADDRESS                   = "123 Saint-Jacques Ouest, Montréal",
-  SALON_HOURS                     = "lundi au vendredi de 9h à 17h",
-  SALON_PRICE_LIST                = "Coupe homme : 25 $. Coupe femme : 45 $. Coupe non binaire : 35 $.",
+  SALON_ADDRESS,
+  SALON_HOURS,
+  SALON_PRICE_LIST,
 } = process.env;
 
 const twilioClient =
@@ -48,13 +51,31 @@ const twilioClient =
     ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     : null;
 
-// Pending tokens pour la page de confirmation email
-const pending = new Map();
+// ─── Stores en mémoire ────────────────────────────────────────────────────────
+const pending     = new Map(); // token  → payload confirmation email
+const dtmfPending = new Map(); // callSid → { resolve, callId, openaiWs }
+const callSessions = new Map(); // callSid → { openaiWs, callState, streamSid }
+
 const PENDING_TTL_MS = 20 * 60 * 1000;
-function now() { return Date.now(); }
+function now()        { return Date.now(); }
 function publicBase() { return (PUBLIC_BASE_URL || "").replace(/\/$/, ""); }
 
-// ─── Helpers Calendly ─────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function normalizePhone(raw = "") {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10)                            return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
+function formatPhoneDisplay(e164 = "") {
+  const d = e164.replace(/^\+1/, "");
+  if (d.length === 10) return `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}`;
+  return e164;
+}
+
+// ─── Calendly ─────────────────────────────────────────────────────────────────
 function calendlyHeaders() {
   return {
     Authorization: `Bearer ${CALENDLY_API_TOKEN}`,
@@ -62,10 +83,10 @@ function calendlyHeaders() {
   };
 }
 
-function eventTypeUriForService(service) {
-  if (service === "homme")      return CALENDLY_EVENT_TYPE_URI_HOMME;
-  if (service === "femme")      return CALENDLY_EVENT_TYPE_URI_FEMME;
-  if (service === "nonbinaire") return CALENDLY_EVENT_TYPE_URI_NONBINAIRE;
+function eventTypeUriForService(s) {
+  if (s === "homme")      return CALENDLY_EVENT_TYPE_URI_HOMME;
+  if (s === "femme")      return CALENDLY_EVENT_TYPE_URI_FEMME;
+  if (s === "nonbinaire") return CALENDLY_EVENT_TYPE_URI_NONBINAIRE;
   return null;
 }
 
@@ -94,7 +115,6 @@ async function calendlyGetAvailableTimes(eventTypeUri) {
     `?event_type=${encodeURIComponent(eventTypeUri)}` +
     `&start_time=${encodeURIComponent(start.toISOString())}` +
     `&end_time=${encodeURIComponent(end.toISOString())}`;
-
   const r = await fetch(url, { headers: calendlyHeaders() });
   const txt = await r.text();
   if (!r.ok) throw new Error(`Calendly avail error: ${r.status} ${txt}`);
@@ -113,15 +133,15 @@ async function calendlyGetEventTypeLocation(eventTypeUri) {
 }
 
 async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }) {
-  const locationConfig = await calendlyGetEventTypeLocation(eventTypeUri);
+  const loc  = await calendlyGetEventTypeLocation(eventTypeUri);
   const body = {
     event_type: eventTypeUri,
     start_time: startTimeIso,
     invitee:    { name, email, timezone: CALENDLY_TIMEZONE },
   };
-  if (locationConfig) {
-    body.location = { kind: locationConfig.kind };
-    if (locationConfig.location) body.location.location = locationConfig.location;
+  if (loc) {
+    body.location = { kind: loc.kind };
+    if (loc.location) body.location.location = loc.location;
   }
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST", headers: calendlyHeaders(), body: JSON.stringify(body),
@@ -132,46 +152,49 @@ async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }
 }
 
 async function sendSms(to, body) {
-  if (!twilioClient || !TWILIO_CALLER_ID) return;
+  if (!twilioClient || !TWILIO_CALLER_ID) {
+    console.warn("[SMS] Config manquante — non envoyé");
+    return;
+  }
+  console.log(`[SMS] → ${to}`);
   await twilioClient.messages.create({ from: TWILIO_CALLER_ID, to, body });
+  console.log(`[SMS] ✅ Envoyé → ${to}`);
 }
 
-// ─── System prompt OpenAI ─────────────────────────────────────────────────────
-function buildSystemPrompt() {
-  return `Tu es Marie, l'assistante virtuelle chaleureuse et professionnelle du Salon Coco, un salon de coiffure à Montréal.
-Tu parles exclusivement en français québécois, avec un ton naturel, amical et concis.
-Tu réponds toujours de façon courte et conversationnelle — pas de longues listes, pas de texte robotique.
+// ─── System prompt ────────────────────────────────────────────────────────────
+function buildSystemPrompt(callerNumber) {
+  return `Tu es Marie, l'assistante virtuelle chaleureuse du Salon Coco à Montréal.
+Tu parles en français québécois, ton ton est naturel, amical et concis.
+Maximum 2-3 phrases par réponse. Une seule question à la fois.
 
-INFORMATIONS DU SALON :
+INFOS DU SALON :
 - Adresse : ${SALON_ADDRESS}
-- Heures d'ouverture : ${SALON_HOURS}
+- Heures : ${SALON_HOURS}
 - Prix : ${SALON_PRICE_LIST}
 
-TES CAPACITÉS :
-1. Prendre des rendez-vous (coupe homme, femme, ou non binaire)
-2. Donner les prix, l'adresse, les heures d'ouverture
-3. Transférer à un agent humain si demandé ou si tu ne peux pas aider
+NUMÉRO DE L'APPELANT : ${callerNumber || "inconnu"}
+(Utilise-le uniquement comme référence interne, ne le mentionne pas au client.)
 
-RÈGLES IMPORTANTES :
-- Sois naturelle et chaleureuse, comme une vraie réceptionniste
-- Ne pose qu'une seule question à la fois
-- Si le client veut un rendez-vous, utilise get_available_slots pour voir les disponibilités avant de proposer des créneaux
-- Pour créer un rendez-vous, tu as besoin : du type de coupe, du créneau choisi, du prénom + nom, et du numéro de téléphone cellulaire
-- Une fois que tu as le numéro de téléphone, utilise send_booking_link pour envoyer le lien de confirmation — NE demande PAS l'email par téléphone
-- Si le client veut parler à quelqu'un, utilise transfer_to_agent
-- Si tu ne comprends pas après 2 tentatives, propose de transférer à un agent
+FLUX RENDEZ-VOUS — suis cet ordre EXACTEMENT :
+1. Détermine le type de coupe (homme / femme / non binaire)
+2. Appelle get_available_slots(service) → propose 3 créneaux naturellement
+3. Confirme le créneau choisi
+4. Demande le prénom et nom complet
+5. Appelle collect_phone_dtmf → dis au client : "Tapez votre numéro de cellulaire sur votre clavier, suivi du dièse."
+   → Attends le résultat de la fonction avant de continuer
+   → La fonction retourne le numéro validé ou une erreur
+6. Confirme le numéro reçu à voix haute (ex: "J'ai bien le 5-1-4, 8-9-4, 5-2-2-1.")
+7. Appelle send_booking_link avec le numéro confirmé
+8. Dis : "Parfait! J'ai envoyé un lien par texto. Cliquez dessus pour entrer votre courriel et votre rendez-vous sera confirmé. Bonne journée!"
 
-FLUX RENDEZ-VOUS :
-1. Demande le type de coupe (si pas déjà mentionné)
-2. Appelle get_available_slots avec le type
-3. Propose les 3 premiers créneaux naturellement (ex: "J'ai lundi à 14h, mardi à 10h ou jeudi à 15h30, ça vous convient lequel?")
-4. Demande le prénom et nom
-5. Demande le numéro de cellulaire
-6. Appelle send_booking_link — dis au client de vérifier ses textos pour finaliser
-7. Confirme chaleureusement et souhaite une belle journée`;
+RÈGLES :
+- NE demande JAMAIS l'email par téléphone
+- NE demande JAMAIS le numéro vocalement — utilise TOUJOURS collect_phone_dtmf
+- Appelle send_booking_link IMMÉDIATEMENT après avoir confirmé le numéro
+- Si transfert demandé → transfer_to_agent`;
 }
 
-// ─── Définition des outils (function calls) ──────────────────────────────────
+// ─── Outils ───────────────────────────────────────────────────────────────────
 const TOOLS = [
   {
     type: "function",
@@ -180,26 +203,28 @@ const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        service: {
-          type: "string",
-          enum: ["homme", "femme", "nonbinaire"],
-          description: "Le type de coupe : homme, femme ou nonbinaire",
-        },
+        service: { type: "string", enum: ["homme", "femme", "nonbinaire"] },
       },
       required: ["service"],
     },
   },
   {
     type: "function",
+    name: "collect_phone_dtmf",
+    description: "Interrompt le stream audio et demande au client de taper son numéro de cellulaire sur le clavier de son téléphone. Retourne le numéro validé en format E.164. DOIT être utilisé à la place de demander le numéro vocalement.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    type: "function",
     name: "send_booking_link",
-    description: "Enregistre la réservation et envoie un lien SMS au client pour qu'il saisisse son courriel et confirme son rendez-vous.",
+    description: "Envoie un lien SMS pour confirmer le courriel et finaliser le RDV. Appelle après avoir reçu le numéro de collect_phone_dtmf.",
     parameters: {
       type: "object",
       properties: {
-        service:      { type: "string", enum: ["homme", "femme", "nonbinaire"] },
-        slot_iso:     { type: "string", description: "Créneau choisi en format ISO 8601 UTC" },
-        name:         { type: "string", description: "Prénom et nom du client" },
-        phone:        { type: "string", description: "Numéro de téléphone en format E.164, ex: +15141234567" },
+        service:  { type: "string", enum: ["homme", "femme", "nonbinaire"] },
+        slot_iso: { type: "string", description: "Créneau ISO 8601 UTC" },
+        name:     { type: "string", description: "Prénom et nom complet" },
+        phone:    { type: "string", description: "Numéro E.164 retourné par collect_phone_dtmf" },
       },
       required: ["service", "slot_iso", "name", "phone"],
     },
@@ -207,15 +232,11 @@ const TOOLS = [
   {
     type: "function",
     name: "get_salon_info",
-    description: "Retourne les informations du salon : adresse, heures d'ouverture, ou liste de prix.",
+    description: "Retourne adresse, heures ou prix du salon.",
     parameters: {
       type: "object",
       properties: {
-        topic: {
-          type: "string",
-          enum: ["adresse", "heures", "prix"],
-          description: "Le sujet de la question",
-        },
+        topic: { type: "string", enum: ["adresse", "heures", "prix"] },
       },
       required: ["topic"],
     },
@@ -223,51 +244,90 @@ const TOOLS = [
   {
     type: "function",
     name: "transfer_to_agent",
-    description: "Transfère l'appel à un agent humain du salon.",
+    description: "Transfère l'appel à un agent humain.",
     parameters: { type: "object", properties: {}, required: [] },
   },
 ];
 
 // ─── Exécution des function calls ─────────────────────────────────────────────
-async function executeTool(name, args, callState) {
-  console.log(`[TOOL] ${name}`, args);
+async function executeTool(name, args, callState, callSid) {
+  console.log(`[TOOL] ${name}`, JSON.stringify(args));
 
   if (name === "get_available_slots") {
     const uri = eventTypeUriForService(args.service);
-    if (!uri) return { error: "Ce type de coupe n'est pas configuré." };
-
+    if (!uri) return { error: "Type de coupe non configuré." };
     const slots = await calendlyGetAvailableTimes(uri);
+    console.log(`[TOOL] ${slots.length} créneaux pour ${args.service}`);
     if (!slots.length) return { slots: [], message: "Aucune disponibilité dans les 7 prochains jours." };
-
-    const top = slots.slice(0, 5);
     return {
       service: args.service,
-      slots: top.map(iso => ({
-        iso,
-        label: slotToFrench(iso),
-      })),
+      slots: slots.slice(0, 5).map(iso => ({ iso, label: slotToFrench(iso) })),
     };
   }
 
-  if (name === "send_booking_link") {
-    // Normaliser le téléphone
-    const digits = (args.phone || "").replace(/\D/g, "");
-    let phone = null;
-    if (digits.length === 10)                           phone = `+1${digits}`;
-    else if (digits.length === 11 && digits[0] === "1") phone = `+${digits}`;
-    else                                                phone = callState.callerNumber || null;
+  // ── collect_phone_dtmf ────────────────────────────────────────────────────
+  // On crée une Promise qui sera résolue quand /phone-collected reçoit les chiffres
+  if (name === "collect_phone_dtmf") {
+    return new Promise((resolve) => {
+      const session = callSessions.get(callSid);
+      if (!session) {
+        resolve({ error: "Session introuvable." });
+        return;
+      }
 
-    if (!phone) return { error: "Numéro de téléphone invalide." };
+      console.log(`[DTMF] En attente des chiffres pour ${callSid}`);
+
+      // Stocker la callback pour que /phone-collected puisse la résoudre
+      dtmfPending.set(callSid, { resolve, callId: null });
+
+      // Rediriger Twilio vers /collect-phone via Twilio REST API
+      // (on ne peut pas envoyer de TwiML depuis un WebSocket — on doit
+      //  modifier l'appel actif via l'API REST Twilio)
+      if (twilioClient && session.twilioCallSid) {
+        const collectUrl = `${publicBase()}/collect-phone?callSid=${encodeURIComponent(callSid)}`;
+        twilioClient.calls(session.twilioCallSid)
+          .update({ url: collectUrl, method: "POST" })
+          .then(() => console.log(`[DTMF] Appel redirigé vers ${collectUrl}`))
+          .catch(e => {
+            console.error("[DTMF] Erreur redirection:", e.message);
+            dtmfPending.delete(callSid);
+            resolve({ error: "Impossible de rediriger l'appel pour la saisie DTMF." });
+          });
+      } else {
+        console.error("[DTMF] twilioClient ou twilioCallSid manquant");
+        resolve({ error: "Configuration Twilio manquante." });
+      }
+
+      // Timeout de sécurité : 45 secondes
+      setTimeout(() => {
+        if (dtmfPending.has(callSid)) {
+          console.warn(`[DTMF] Timeout pour ${callSid}`);
+          dtmfPending.delete(callSid);
+          resolve({ error: "Délai dépassé — le client n'a pas saisi son numéro." });
+        }
+      }, 45_000);
+    });
+  }
+
+  if (name === "send_booking_link") {
+    console.log(`[TOOL] send_booking_link — phone: "${args.phone}"`);
+
+    const phone = normalizePhone(args.phone) || normalizePhone(callState.callerNumber);
+    if (!phone) {
+      return { error: "Numéro invalide. Appelle collect_phone_dtmf pour récupérer un numéro valide." };
+    }
 
     const uri = eventTypeUriForService(args.service);
-    if (!uri) return { error: "Type de coupe non configuré." };
+    if (!uri)        return { error: "Type de coupe non configuré." };
+    if (!args.slot_iso) return { error: "Créneau manquant." };
+    if (!args.name?.trim()) return { error: "Nom manquant." };
 
     const token = crypto.randomBytes(16).toString("hex");
     pending.set(token, {
       expiresAt: now() + PENDING_TTL_MS,
       payload: {
         phone,
-        name:         args.name,
+        name:         args.name.trim(),
         service:      args.service,
         eventTypeUri: uri,
         startTimeIso: args.slot_iso,
@@ -275,16 +335,23 @@ async function executeTool(name, args, callState) {
     });
 
     const link = `${publicBase()}/confirm-email/${token}`;
-    await sendSms(
-      phone,
-      `Salon Coco — Bonjour ${args.name}!\n` +
-      `Pour finaliser votre rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
-      `veuillez saisir votre courriel ici (lien valide 20 min) :\n${link}`
-    );
+
+    try {
+      await sendSms(
+        phone,
+        `Salon Coco — Bonjour ${args.name}!\n` +
+        `Pour finaliser votre rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
+        `veuillez saisir votre courriel ici (lien valide 20 min) :\n${link}`
+      );
+    } catch (e) {
+      console.error("[TOOL] Erreur SMS:", e.message);
+      return { error: `Erreur SMS : ${e.message}` };
+    }
 
     return {
-      success: true,
-      message: `Lien envoyé au ${phone}. Le client doit cliquer le lien dans ses textos pour confirmer avec son courriel.`,
+      success:    true,
+      phone_used: phone,
+      message:    `SMS envoyé au ${formatPhoneDisplay(phone)}. Dis au client de vérifier ses textos.`,
     };
   }
 
@@ -296,6 +363,7 @@ async function executeTool(name, args, callState) {
   }
 
   if (name === "transfer_to_agent") {
+    console.log("[TOOL] Transfert demandé");
     callState.shouldTransfer = true;
     return { transferring: true };
   }
@@ -303,31 +371,116 @@ async function executeTool(name, args, callState) {
   return { error: `Fonction inconnue : ${name}` };
 }
 
-// ─── Route HTTP : entrée d'appel Twilio ───────────────────────────────────────
+// ─── Routes HTTP ──────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.json({ ok: true, salon: "Salon Coco" }));
 
+// Entrée d'appel Twilio
 app.post("/voice", (req, res) => {
-  const wsUrl = publicBase().replace(/^https/, "wss").replace(/^http/, "ws");
+  const wsUrl      = publicBase().replace(/^https/, "wss").replace(/^http/, "ws");
+  const callerSid  = req.body.CallSid || "";
+  const callerFrom = req.body.From    || "";
 
-  const twiml = new twilio.twiml.VoiceResponse();
+  console.log(`[VOICE] Appel entrant — CallSid: ${callerSid} — From: ${callerFrom}`);
+
+  // Stocker le CallSid Twilio pour pouvoir rediriger l'appel plus tard (DTMF)
+  // On l'associera au callSid WebSocket dans le handler "start"
+  // Ici on le stocke temporairement avec le From comme clé
+  callSessions.set(`pending_${callerFrom}`, { twilioCallSid: callerSid, callerNumber: callerFrom });
+
+  const twiml   = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
   const stream  = connect.stream({ url: `${wsUrl}/media-stream` });
-  // Passer le numéro appelant au WebSocket via paramètre
-  stream.parameter({ name: "callerNumber", value: req.body.From || "" });
+  stream.parameter({ name: "callerNumber", value: callerFrom });
+  stream.parameter({ name: "twilioCallSid", value: callerSid });
 
   res.type("text/xml").send(twiml.toString());
 });
 
-// ─── WebSocket : Twilio Media Stream ↔ OpenAI Realtime ───────────────────────
+// Page DTMF : Twilio redirige ici pour collecter le numéro
+app.post("/collect-phone", (req, res) => {
+  const callSid = req.query.callSid || "";
+  console.log(`[DTMF] /collect-phone — callSid: ${callSid}`);
+
+  const twiml = new twilio.twiml.VoiceResponse();
+  const gather = twiml.gather({
+    input:          "dtmf",
+    numDigits:      10,
+    timeout:        15,
+    finishOnKey:    "#",
+    action:         `${publicBase()}/phone-collected?callSid=${encodeURIComponent(callSid)}`,
+    method:         "POST",
+  });
+  gather.say({ language: "fr-CA", voice: "alice" },
+    "Veuillez taper votre numéro de cellulaire à dix chiffres, puis appuyez sur le dièse."
+  );
+
+  // Si aucune touche en 15s
+  twiml.say({ language: "fr-CA", voice: "alice" },
+    "Je n'ai pas reçu de numéro. Je vous retourne à Marie."
+  );
+  twiml.redirect({
+    method: "POST",
+  }, `${publicBase()}/resume-stream?callSid=${encodeURIComponent(callSid)}&error=timeout`);
+
+  res.type("text/xml").send(twiml.toString());
+});
+
+// Réception des chiffres DTMF
+app.post("/phone-collected", (req, res) => {
+  const callSid = req.query.callSid || "";
+  const digits  = (req.body.Digits || "").replace(/\D/g, "");
+
+  console.log(`[DTMF] /phone-collected — callSid: ${callSid} — digits: ${digits}`);
+
+  const phone = normalizePhone(digits);
+  const entry = dtmfPending.get(callSid);
+
+  if (entry) {
+    dtmfPending.delete(callSid);
+    if (phone) {
+      console.log(`[DTMF] ✅ Numéro validé: ${phone}`);
+      entry.resolve({
+        phone,
+        phone_display: formatPhoneDisplay(phone),
+        message: `Numéro reçu : ${formatPhoneDisplay(phone)}. Confirme ce numéro au client puis appelle send_booking_link.`,
+      });
+    } else {
+      console.warn(`[DTMF] ❌ Numéro invalide: "${digits}"`);
+      entry.resolve({
+        error: `Numéro invalide (${digits}). Demande au client de retaper son numéro — rappelle collect_phone_dtmf.`,
+      });
+    }
+  } else {
+    console.warn(`[DTMF] Aucune entrée pending pour ${callSid}`);
+  }
+
+  // Reprendre le stream OpenAI Realtime
+  const twiml = new twilio.twiml.VoiceResponse();
+  const connect = twiml.connect();
+  const wsUrl   = publicBase().replace(/^https/, "wss").replace(/^http/, "ws");
+  const stream  = connect.stream({ url: `${wsUrl}/media-stream` });
+
+  const session = callSessions.get(callSid);
+  stream.parameter({ name: "callerNumber",  value: session?.callerNumber  || "" });
+  stream.parameter({ name: "twilioCallSid", value: session?.twilioCallSid || "" });
+  stream.parameter({ name: "resumeSession", value: "true" });
+
+  res.type("text/xml").send(twiml.toString());
+});
+
+// ─── WebSocket : Twilio ↔ OpenAI Realtime ────────────────────────────────────
 wss.on("connection", (twilioWs) => {
-  console.log("[WS] Connexion Twilio entrante");
+  console.log("[WS] Nouvelle connexion Twilio");
 
-  let openaiWs       = null;
-  let streamSid      = null;
-  let callState      = { callerNumber: "", shouldTransfer: false };
-  let pendingTools   = new Map(); // call_id → args en attente
+  let openaiWs      = null;
+  let streamSid     = null;
+  let callSid       = null; // notre clé interne (streamSid au départ, puis stabilisé)
+  let isResuming    = false;
+  let callState     = { callerNumber: "", shouldTransfer: false };
+  let pendingTools  = new Map();
+  let sessionReady  = false;
 
-  // ── Ouvrir la connexion OpenAI Realtime ──────────────────────────────────
+  // ── Ouvrir OpenAI Realtime ─────────────────────────────────────────────
   openaiWs = new WebSocket(
     `wss://api.openai.com/v1/realtime?model=${OPENAI_REALTIME_MODEL}`,
     {
@@ -338,158 +491,201 @@ wss.on("connection", (twilioWs) => {
     }
   );
 
-  // ── OpenAI connecté : envoyer la config de session ───────────────────────
-  openaiWs.on("open", () => {
-    console.log("[OpenAI] Connecté au Realtime");
+  function initSession(resume = false) {
+    if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN || sessionReady) return;
+    sessionReady = true;
+
+    console.log(`[OpenAI] Init session — caller: ${callState.callerNumber} — resume: ${resume}`);
 
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
-        turn_detection:    { type: "server_vad" },
+        turn_detection:      { type: "server_vad" },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        voice:             OPENAI_TTS_VOICE,
-        instructions:      buildSystemPrompt(),
-        tools:             TOOLS,
-        tool_choice:       "auto",
-        modalities:        ["text", "audio"],
-        temperature:       0.7,
+        voice:               OPENAI_TTS_VOICE,
+        instructions:        buildSystemPrompt(callState.callerNumber),
+        tools:               TOOLS,
+        tool_choice:         "auto",
+        modalities:          ["text", "audio"],
+        temperature:         0.7,
       },
     }));
 
-    // Message d'accueil initial
-    openaiWs.send(JSON.stringify({
-      type: "conversation.item.create",
-      item: {
-        type: "message",
-        role: "user",
-        content: [{ type: "input_text", text: "L'appel vient de commencer. Dis bonjour chaleureusement et présente les options." }],
-      },
-    }));
-    openaiWs.send(JSON.stringify({ type: "response.create" }));
-  });
-
-  // ── Messages entrants depuis OpenAI ──────────────────────────────────────
-  openaiWs.on("message", async (data) => {
-    let event;
-    try { event = JSON.parse(data); } catch { return; }
-
-    // Audio → renvoyer à Twilio
-    if (event.type === "response.audio.delta" && event.delta) {
-      if (twilioWs.readyState === WebSocket.OPEN) {
-        twilioWs.send(JSON.stringify({
-          event: "media",
-          streamSid,
-          media: { payload: event.delta },
-        }));
-      }
-    }
-
-    // Function call reçu — accumuler les arguments
-    if (event.type === "response.function_call_arguments.delta") {
-      const existing = pendingTools.get(event.call_id) || { name: "", args: "" };
-      existing.args += event.delta;
-      pendingTools.set(event.call_id, existing);
-    }
-
-    // Nom de la fonction associé au call_id
-    if (event.type === "response.output_item.added" &&
-        event.item?.type === "function_call") {
-      pendingTools.set(event.item.call_id, {
-        name: event.item.name,
-        args: "",
-      });
-    }
-
-    // Function call complet — exécuter
-    if (event.type === "response.function_call_arguments.done") {
-      const tool = pendingTools.get(event.call_id);
-      if (!tool) return;
-
-      let parsedArgs = {};
-      try { parsedArgs = JSON.parse(event.arguments || tool.args || "{}"); } catch {}
-
-      const result = await executeTool(tool.name, parsedArgs, callState).catch(e => ({
-        error: e.message,
-      }));
-
-      console.log(`[TOOL RESULT] ${tool.name}:`, result);
-
-      // Si transfert demandé, raccrocher et transférer via Twilio REST
-      if (callState.shouldTransfer) {
-        if (twilioWs.readyState === WebSocket.OPEN) {
-          // Laisser OpenAI finir de parler puis terminer le stream
-          setTimeout(() => {
-            twilioWs.send(JSON.stringify({ event: "stop", streamSid }));
-          }, 2000);
-        }
-        // On ne retourne pas le résultat à OpenAI pour un transfert
-        pendingTools.delete(event.call_id);
-        return;
-      }
-
-      // Retourner le résultat à OpenAI pour qu'il continue la conversation
-      if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type:    "function_call_output",
-            call_id: event.call_id,
-            output:  JSON.stringify(result),
-          },
-        }));
-        openaiWs.send(JSON.stringify({ type: "response.create" }));
-      }
-
-      pendingTools.delete(event.call_id);
-    }
-
-    // Erreurs OpenAI
-    if (event.type === "error") {
-      console.error("[OpenAI ERROR]", event.error);
-    }
-  });
-
-  openaiWs.on("close",  () => console.log("[OpenAI] Déconnecté"));
-  openaiWs.on("error", (e) => console.error("[OpenAI WS error]", e.message));
-
-  // ── Messages entrants depuis Twilio ──────────────────────────────────────
-  twilioWs.on("message", (data) => {
-    let msg;
-    try { msg = JSON.parse(data); } catch { return; }
-
-    if (msg.event === "start") {
-      streamSid = msg.start.streamSid;
-      // Récupérer le numéro appelant depuis les paramètres custom
-      const params = msg.start.customParameters || {};
-      callState.callerNumber = params.callerNumber || "";
-      console.log(`[Twilio] Stream démarré — ${streamSid} — caller: ${callState.callerNumber}`);
-    }
-
-    // Audio du client → OpenAI
-    if (msg.event === "media" && openaiWs?.readyState === WebSocket.OPEN) {
+    if (!resume) {
+      // Première connexion : message d'accueil
       openaiWs.send(JSON.stringify({
-        type:  "input_audio_buffer.append",
-        audio: msg.media.payload,
+        type: "conversation.item.create",
+        item: {
+          type: "message", role: "user",
+          content: [{ type: "input_text", text: "L'appel commence. Dis bonjour et présente les options." }],
+        },
       }));
+      openaiWs.send(JSON.stringify({ type: "response.create" }));
     }
+    // Si resume : OpenAI reprend naturellement avec le contexte existant
+    // Les function_call_output seront injectés par executeTool via la Promise
+  }
 
-    if (msg.event === "stop") {
-      console.log("[Twilio] Stream terminé");
-      openaiWs?.close();
+  openaiWs.on("open", () => {
+    console.log("[OpenAI] WebSocket ouvert — attente du message start Twilio");
+  });
+
+  // ── Messages OpenAI ────────────────────────────────────────────────────
+  openaiWs.on("message", async (rawData) => {
+    let event;
+    try { event = JSON.parse(rawData); } catch { return; }
+
+    switch (event.type) {
+
+      case "response.audio.delta":
+        if (event.delta && twilioWs.readyState === WebSocket.OPEN) {
+          twilioWs.send(JSON.stringify({
+            event: "media", streamSid,
+            media: { payload: event.delta },
+          }));
+        }
+        break;
+
+      case "response.output_item.added":
+        if (event.item?.type === "function_call") {
+          pendingTools.set(event.item.call_id, { name: event.item.name, args: "" });
+          console.log(`[OpenAI] Function call: ${event.item.name} (${event.item.call_id})`);
+        }
+        break;
+
+      case "response.function_call_arguments.delta": {
+        const t = pendingTools.get(event.call_id);
+        if (t) t.args += (event.delta || "");
+        break;
+      }
+
+      case "response.function_call_arguments.done": {
+        const tool = pendingTools.get(event.call_id);
+        if (!tool) break;
+
+        let args = {};
+        try { args = JSON.parse(event.arguments || tool.args || "{}"); } catch {}
+
+        // executeTool peut être async longue durée (ex: collect_phone_dtmf attend 45s max)
+        const result = await executeTool(tool.name, args, callState, callSid)
+          .catch(e => ({ error: e.message }));
+
+        console.log(`[TOOL RESULT] ${tool.name}:`, JSON.stringify(result));
+
+        if (callState.shouldTransfer) {
+          setTimeout(() => {
+            if (twilioWs.readyState === WebSocket.OPEN)
+              twilioWs.send(JSON.stringify({ event: "stop", streamSid }));
+          }, 2500);
+          pendingTools.delete(event.call_id);
+          break;
+        }
+
+        if (openaiWs.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "function_call_output",
+              call_id: event.call_id,
+              output: JSON.stringify(result),
+            },
+          }));
+          openaiWs.send(JSON.stringify({ type: "response.create" }));
+        }
+
+        pendingTools.delete(event.call_id);
+        break;
+      }
+
+      case "error":
+        console.error("[OpenAI ERROR]", JSON.stringify(event.error));
+        break;
+    }
+  });
+
+  openaiWs.on("close",  (c) => console.log(`[OpenAI] Fermé (${c})`));
+  openaiWs.on("error",  (e) => console.error("[OpenAI WS]", e.message));
+
+  // ── Messages Twilio ────────────────────────────────────────────────────
+  twilioWs.on("message", (rawData) => {
+    let msg;
+    try { msg = JSON.parse(rawData); } catch { return; }
+
+    switch (msg.event) {
+
+      case "start": {
+        streamSid  = msg.start.streamSid;
+        const p    = msg.start.customParameters || {};
+        isResuming = p.resumeSession === "true";
+
+        callState.callerNumber = p.callerNumber  || "";
+        const twilioCallSid    = p.twilioCallSid || "";
+
+        // Utiliser le streamSid comme clé de session stable
+        callSid = streamSid;
+
+        // Récupérer ou créer la session
+        let existingSession = null;
+        // Chercher la session par callerNumber (créée dans /voice)
+        const pendingKey = `pending_${callState.callerNumber}`;
+        if (callSessions.has(pendingKey)) {
+          existingSession = callSessions.get(pendingKey);
+          callSessions.delete(pendingKey);
+        }
+
+        callSessions.set(callSid, {
+          openaiWs,
+          callState,
+          streamSid,
+          twilioCallSid: twilioCallSid || existingSession?.twilioCallSid || "",
+          callerNumber:  callState.callerNumber,
+        });
+
+        // Si c'est un resume post-DTMF, mettre à jour la session existante
+        if (isResuming) {
+          // Retrouver l'ancienne session par callerNumber pour migrer le dtmfPending
+          console.log(`[Twilio] Resume stream — ${streamSid}`);
+          // La Promise collect_phone_dtmf est déjà résolue via /phone-collected
+          // OpenAI va recevoir le function_call_output et continuer
+        } else {
+          console.log(`[Twilio] Nouveau stream — ${streamSid} — caller: ${callState.callerNumber}`);
+        }
+
+        if (openaiWs.readyState === WebSocket.OPEN) {
+          initSession(isResuming);
+        } else {
+          openaiWs.once("open", () => initSession(isResuming));
+        }
+        break;
+      }
+
+      case "media":
+        if (openaiWs?.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({
+            type:  "input_audio_buffer.append",
+            audio: msg.media.payload,
+          }));
+        }
+        break;
+
+      case "stop":
+        console.log("[Twilio] Stream arrêté");
+        if (!isResuming) openaiWs?.close();
+        break;
     }
   });
 
   twilioWs.on("close", () => {
-    console.log("[Twilio] WebSocket fermé");
-    openaiWs?.close();
+    console.log("[Twilio] WS fermé");
+    if (!isResuming) openaiWs?.close();
   });
 
-  twilioWs.on("error", (e) => console.error("[Twilio WS error]", e.message));
+  twilioWs.on("error", (e) => console.error("[Twilio WS]", e.message));
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// PAGE WEB : saisie email + création RDV Calendly
+// PAGE WEB : saisie email + création RDV
 // ════════════════════════════════════════════════════════════════════════════════
 app.get("/confirm-email/:token", (req, res) => {
   const entry = pending.get(req.params.token);
@@ -512,15 +708,14 @@ app.post("/confirm-email/:token", async (req, res) => {
   }
 
   try {
-    const result       = await calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email });
+    const result        = await calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email });
     pending.delete(req.params.token);
 
     const cancelUrl     = result?.resource?.cancel_url     || "";
     const rescheduleUrl = result?.resource?.reschedule_url || "";
     const slotLabel     = slotToFrench(startTimeIso);
 
-    await sendSms(
-      phone,
+    await sendSms(phone,
       `✅ Votre rendez-vous au Salon Coco est confirmé!\n\n` +
       `👤 Nom        : ${name}\n` +
       `✉️ Courriel   : ${email}\n` +
@@ -534,17 +729,15 @@ app.post("/confirm-email/:token", async (req, res) => {
 
     res.setHeader("Content-Type", "text/html")
        .send(htmlSuccess(name, slotLabel, rescheduleUrl, cancelUrl));
-
   } catch (e) {
     console.error("Erreur confirm-email:", e);
     res.status(500).setHeader("Content-Type", "text/html").send(htmlError(e.message));
   }
 });
 
-// ─── HTML helpers ─────────────────────────────────────────────────────────────
+// ─── HTML ─────────────────────────────────────────────────────────────────────
 function htmlLayout(title, content) {
-  return `<!DOCTYPE html>
-<html lang="fr"><head>
+  return `<!DOCTYPE html><html lang="fr"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} — Salon Coco</title>
 <style>
@@ -599,7 +792,7 @@ function htmlSuccess(name, slotLabel, rescheduleUrl, cancelUrl) {
     <h1>✅ Rendez-vous confirmé!</h1>
     <p>Merci <strong>${name}</strong>! Votre rendez-vous est bien enregistré.</p>
     <div class="detail">📅 <strong>${slotLabel}</strong><br>📍 ${SALON_ADDRESS}</div>
-    <p>Un message texte de confirmation avec tous les détails vient d'être envoyé sur votre cellulaire.</p>
+    <p>Un message texte de confirmation vient d'être envoyé sur votre cellulaire.</p>
     ${rescheduleUrl ? `<a class="lnk" href="${rescheduleUrl}">📆 Modifier le rendez-vous</a>` : ""}
     ${cancelUrl     ? `<a class="lnk" href="${cancelUrl}">❌ Annuler le rendez-vous</a>`     : ""}
     <p class="muted">Vous pouvez fermer cette page.</p>`);
@@ -615,8 +808,7 @@ function htmlError(msg) {
 function html410() {
   return htmlLayout("Lien expiré", `
     <h1>⏰ Lien expiré</h1>
-    <p>Ce lien n'est plus valide (durée : 20 minutes).
-       Veuillez rappeler le Salon Coco pour obtenir un nouveau lien.</p>`);
+    <p>Ce lien n'est plus valide (20 min). Veuillez rappeler le salon pour un nouveau lien.</p>`);
 }
 
 // ─── Démarrage ────────────────────────────────────────────────────────────────
