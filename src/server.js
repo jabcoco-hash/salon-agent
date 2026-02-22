@@ -188,11 +188,12 @@ INFOS DU SALON :
 NUMÉRO DE L'APPELANT : ${callerNumber || "inconnu"}
 (Utilise-le uniquement comme référence interne, ne le mentionne pas au client.)
 
-FLUX RENDEZ-VOUS — suis cet ordre EXACTEMENT :
+FLUX RENDEZ-VOUS — suis cet ordre EXACTEMENT, ne saute AUCUNE étape :
 1. Détermine le type de coupe (homme / femme / non binaire)
 2. Appelle get_available_slots(service) → propose 3 créneaux naturellement
-3. Confirme le créneau choisi
-4. Demande le prénom et nom complet
+3. Attends que le client choisisse un créneau — NE passe PAS à l'étape suivante sans confirmation
+4. Demande le prénom et nom complet — OBLIGATOIRE, ne saute pas cette étape
+   → Attends la réponse avant de continuer
 5. Avant d'appeler collect_phone_dtmf, dis exactement :
    "Parfait! Maintenant, tapez votre numéro de cellulaire à dix chiffres sur le clavier de votre téléphone, puis appuyez sur le dièse."
    → Appelle IMMÉDIATEMENT collect_phone_dtmf après avoir dit cette phrase
@@ -301,12 +302,14 @@ async function executeTool(name, args, callState, callSid) {
       // Stocker la callback pour que /phone-collected puisse la résoudre
       dtmfPending.set(callSid, { resolve, callId: null });
 
-      // Sauvegarder la session OpenAI avec clé callerNumber pour la retrouver au resume
+      // Sauvegarder la session OpenAI avec twilioCallSid comme clé stable
       const currentSession = callSessions.get(callSid);
       if (currentSession) {
-        const resumeKey = `dtmf_resume_${currentSession.callerNumber}`;
+        const resumeKey = `dtmf_resume_${currentSession.twilioCallSid}`;
         callSessions.set(resumeKey, currentSession);
-        console.log(`[DTMF] Session OpenAI sauvegardée sous ${resumeKey}`);
+        console.log(`[DTMF] Session OpenAI sauvegardée sous ${resumeKey} (twilioCallSid: ${currentSession.twilioCallSid})`);
+      } else {
+        console.warn(`[DTMF] ⚠️ Session introuvable pour callSid: ${callSid} — impossible de sauvegarder`);
       }
 
       // Rediriger Twilio vers /collect-phone via Twilio REST API
@@ -708,8 +711,11 @@ wss.on("connection", (twilioWs) => {
           // Retrouver la session existante via callerNumber
           console.log(`[Twilio] Resume stream — ${streamSid} — caller: ${callState.callerNumber}`);
 
-          const resumeKey = `dtmf_resume_${callState.callerNumber}`;
-          const savedSession = callSessions.get(resumeKey);
+          // Chercher par twilioCallSid (stable) puis fallback callerNumber
+          const resumeKey = `dtmf_resume_${twilioCallSid}` ;
+          const resumeKeyFallback = `dtmf_resume_${callState.callerNumber}`;
+          const savedSession = callSessions.get(resumeKey) || callSessions.get(resumeKeyFallback);
+          console.log(`[Twilio] Cherche session sous ${resumeKey} → ${callSessions.has(resumeKey) ? "✅ trouvée" : "❌ non trouvée"}`);
 
           if (savedSession && savedSession.openaiWs?.readyState === WebSocket.OPEN) {
             // Réutiliser le WebSocket OpenAI existant — contexte de conversation préservé
@@ -723,6 +729,7 @@ wss.on("connection", (twilioWs) => {
             // (on ne peut pas l'annuler mais on peut l'ignorer)
 
             callSessions.delete(resumeKey);
+            callSessions.delete(resumeKeyFallback);
             callSessions.set(streamSid, {
               openaiWs,
               callState,
