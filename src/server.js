@@ -14,6 +14,7 @@ const {
   LANG = "fr-CA",
 
   OPENAI_API_KEY,
+  OPENAI_MODEL,
   SALON_ADDRESS = "Adresse non configurée",
   SALON_HOURS = "Horaires non configurés",
   SALON_PRICES = "Prix non configurés",
@@ -99,7 +100,7 @@ Format:
 `.trim();
 
   const completion = await openai.chat.completions.create({
-    model: "gpt-4.1-mini",
+    model: OPENAI_MODEL,
     temperature: 0.2,
     messages: [
       { role: "system", content: system },
