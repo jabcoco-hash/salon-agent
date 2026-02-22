@@ -340,9 +340,32 @@ async function runTool(name, args, session) {
 
       const collectUrl = `${base()}/collect-phone?sid=${encodeURIComponent(session.twilioCallSid)}`;
 
-      // Stocker l'URL de redirection — sera déclenchée sur response.done
-      session.pendingDtmfUrl = collectUrl;
-      console.log(`[DTMF] URL en attente de response.done : ${collectUrl}`);
+      // Redirection après que l'audio d'OpenAI soit terminé
+      // On écoute output_audio_buffer.committed qui signale la fin du dernier chunk audio
+      let audioCommittedCount = 0;
+      const onAudioDone = (raw) => {
+        let ev;
+        try { ev = JSON.parse(raw); } catch { return; }
+        // response.output_item.done avec audio = OpenAI a fini de générer l'audio
+        if (ev.type === "response.output_item.done" && ev.item?.type === "message") {
+          oaiWs.removeListener("message", onAudioDone);
+          console.log(`[DTMF] Audio terminé → redirection dans 800ms vers ${collectUrl}`);
+          setTimeout(() => {
+            if (!session.dtmfResolve) return; // déjà annulé
+            twilioClient.calls(session.twilioCallSid)
+              .update({ url: collectUrl, method: "POST" })
+              .then(() => console.log("[DTMF] ✅ Redirection déclenchée"))
+              .catch(e => {
+                console.error("[DTMF] ❌ Erreur redirection:", e.message);
+                const r = session.dtmfResolve;
+                if (r) { delete session.dtmfResolve; r({ error: "Impossible de rediriger." }); }
+              });
+          }, 800);
+        }
+      };
+      oaiWs.on("message", onAudioDone);
+      // Sécurité : retirer l'écouteur après 15s si jamais response.output_item.done n'arrive pas
+      setTimeout(() => oaiWs.removeListener("message", onAudioDone), 15_000);
 
       // Timeout 60s
       setTimeout(() => {
@@ -676,30 +699,6 @@ wss.on("connection", (twilioWs) => {
         pendingTools.delete(ev.call_id);
         break;
       }
-
-      // Quand OpenAI a fini de parler → déclencher la redirection DTMF si en attente
-      case "response.done":
-        if (session?.pendingDtmfUrl) {
-          const url = session.pendingDtmfUrl;
-          delete session.pendingDtmfUrl;
-          console.log(`[DTMF] response.done → redirection vers ${url}`);
-          // Petit délai pour que l'audio finisse de jouer côté client
-          setTimeout(() => {
-            twilioClient.calls(session.twilioCallSid)
-              .update({ url, method: "POST" })
-              .then(() => console.log("[DTMF] ✅ Redirection déclenchée"))
-              .catch(e => {
-                console.error("[DTMF] ❌ Erreur redirection:", e.message);
-                if (session.dtmfResolve) {
-                  const r = session.dtmfResolve;
-                  delete session.dtmfResolve;
-                  delete session.pendingDtmfUrl;
-                  r({ error: "Impossible de rediriger l'appel." });
-                }
-              });
-          }, 800);
-        }
-        break;
 
       case "error":
         console.error("[OAI ERROR]", JSON.stringify(ev.error));
