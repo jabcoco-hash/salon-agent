@@ -136,27 +136,33 @@ async function calendlyGetAvailableTimes(eventTypeUri, startIso, endIso) {
 }
 
 async function calendlyCreateInvitee({ eventTypeUri, startTimeIso, name, email }) {
+  // On ne garde que le strict nécessaire : l'événement, l'heure, le nom et l'email.
   const body = {
     event_type: eventTypeUri,
     start_time: startTimeIso,
-    invitee: { name, email, timezone: CALENDLY_TIMEZONE },
+    invitee: { 
+      name, 
+      email, 
+      timezone: CALENDLY_TIMEZONE 
+    },
   };
 
-  /* FORCE DISABLE: On commente ce bloc car il cause l'erreur 400.
-     Calendly utilisera la localisation configurée dans ton tableau de bord Calendly.
-  */
-  /*
-  if (CALENDLY_LOCATION_KIND) {
-    body.location = { kind: CALENDLY_LOCATION_KIND };
-    if (CALENDLY_LOCATION_TEXT) body.location.location = CALENDLY_LOCATION_TEXT;
-  }
-  */
+  // On a COMPLÈTEMENT supprimé le bloc "if (CALENDLY_LOCATION_KIND)" ici.
+  // Calendly utilisera l'adresse "123 Saint-Jacques Ouest" que tu as configurée 
+  // manuellement dans son interface.
 
   const r = await fetch("https://api.calendly.com/invitees", {
     method: "POST",
     headers: calendlyHeaders(),
     body: JSON.stringify(body),
   });
+
+  const json = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    throw new Error(`Calendly create invitee failed: ${r.status} ${JSON.stringify(json)}`);
+  }
+  return json;
+}
 
   const json = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Calendly create invitee failed: ${r.status} ${JSON.stringify(json)}`);
