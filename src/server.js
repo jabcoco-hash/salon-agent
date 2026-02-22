@@ -54,6 +54,7 @@ function envStr(key, fallback = "") {
 const SALON_ADDRESS   = envStr("SALON_ADDRESS",   "Adresse non configurée — définir SALON_ADDRESS dans Railway");
 const SALON_HOURS     = envStr("SALON_HOURS",     "Heures non configurées — définir SALON_HOURS dans Railway");
 const SALON_PRICE_LIST = envStr("SALON_PRICE_LIST", "Prix non configurés — définir SALON_PRICE_LIST dans Railway");
+const SALON_CITY       = envStr("SALON_CITY",       "Magog Beach");
 
 const twilioClient =
   TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
@@ -172,7 +173,7 @@ async function sendSms(to, body) {
 
 // ─── System prompt ────────────────────────────────────────────────────────────
 function buildSystemPrompt(callerNumber) {
-  return `Tu es Marie, l'assistante virtuelle chaleureuse du Salon Coco à Montréal.
+  return `Tu es Marie, l'assistante virtuelle chaleureuse du Salon Coco à ${SALON_CITY}.
 Tu parles en français québécois, ton ton est naturel, amical et concis.
 Maximum 2-3 phrases par réponse. Une seule question à la fois.
 
@@ -389,6 +390,7 @@ app.get("/debug-env", (req, res) => {
     SALON_ADDRESS,
     SALON_HOURS,
     SALON_PRICE_LIST,
+    SALON_CITY,
     CALENDLY_TIMEZONE,
     OPENAI_TTS_VOICE,
     PUBLIC_BASE_URL:    publicBase(),
@@ -399,6 +401,7 @@ app.get("/debug-env", (req, res) => {
       SALON_ADDRESS:    process.env.SALON_ADDRESS    || '(vide)',
       SALON_HOURS:      process.env.SALON_HOURS      || '(vide)',
       SALON_PRICE_LIST: process.env.SALON_PRICE_LIST || '(vide)',
+      SALON_CITY:       process.env.SALON_CITY       || '(vide)',
     },
   });
 });
