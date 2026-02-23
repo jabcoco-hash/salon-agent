@@ -33,7 +33,7 @@ const {
   CALENDLY_API_TOKEN,
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview-2024-12-17",
-  OPENAI_TTS_VOICE      = "shimmer",
+  OPENAI_TTS_VOICE      = "coral",
   CALENDLY_TIMEZONE     = "America/Toronto",
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
@@ -122,6 +122,43 @@ async function getEventLocation(uri) {
   return Array.isArray(locs) && locs.length ? locs[0] : null;
 }
 
+async function lookupClientByPhone(phone) {
+  // Chercher les rendez-vous passés de ce numéro dans Calendly
+  // On cherche via l'org URI dans les invitees
+  try {
+    // D'abord récupérer l'URI de l'organisation
+    const meR = await fetch("https://api.calendly.com/users/me", { headers: cHeaders() });
+    const me  = await meR.json();
+    const orgUri = me.resource?.current_organization;
+    if (!orgUri) return null;
+
+    // Chercher les invitees avec ce numéro de téléphone
+    // Calendly n'a pas de recherche par téléphone directement —
+    // on cherche par email si on l'a, sinon on retourne null
+    // NOTE : Calendly stocke le téléphone dans les custom questions, pas en champ natif
+    // La meilleure approche : chercher dans les événements récents
+    const url = `https://api.calendly.com/scheduled_events?organization=${encodeURIComponent(orgUri)}&count=100&status=active`;
+    const r   = await fetch(url, { headers: cHeaders() });
+    const j   = await r.json();
+    const events = j.collection || [];
+
+    // Pour chaque événement, chercher si l'invitee correspond au numéro
+    for (const event of events.slice(0, 20)) { // limiter à 20 pour la vitesse
+      const invR = await fetch(`${event.uri}/invitees`, { headers: cHeaders() });
+      const invJ = await invR.json();
+      for (const inv of invJ.collection || []) {
+        if (inv.text_reminder_number && normalizePhone(inv.text_reminder_number) === phone) {
+          return { name: inv.name, email: inv.email, found: true };
+        }
+      }
+    }
+    return null;
+  } catch (e) {
+    console.warn("[LOOKUP] Erreur:", e.message);
+    return null;
+  }
+}
+
 async function createInvitee({ uri, startTimeIso, name, email }) {
   const loc  = await getEventLocation(uri);
   const body = {
@@ -153,11 +190,14 @@ function systemPrompt(callerNumber) {
 
   return `Tu es Marie, la réceptionniste pétillante du ${SALON_NAME} à ${SALON_CITY}!
 Tu ADORES ton travail. Tu es énergique, chaleureuse et naturelle.
-Tu parles en français québécois avec des expressions variées — ne répète jamais deux fois la même dans une conversation :
-- Pour acquiescer : "Ok parfait!", "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Parfait!", "Ok super!", "Très bien!", "Wow super!"
-- Pour patienter : "Laisse-moi vérifier ça!", "Une seconde!", "Je regarde ça!", "Je vérifie pour toi!"
-- Pour approuver : "Super choix!", "Bonne idée!", "Pas de problème!", "Avec plaisir!"
-Varie ces expressions naturellement — évite de toujours commencer par "Parfait".
+Tu parles en français québécois authentique. Tu es TOUJOURS enthousiaste et rayonnante — peu importe l'heure ou le contexte, ton énergie ne baisse jamais.
+
+RÈGLE ABSOLUE SUR LES EXPRESSIONS — tu dois varier à chaque réplique, JAMAIS deux fois la même de suite :
+- Pour acquiescer : "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Ok super!", "Très bien!", "Wow, super!", "Absolument!", "Ben oui!", "Pour sûr!"
+- Pour patienter  : "Laisse-moi vérifier ça!", "Une seconde!", "Je regarde ça!", "Je vérifie pour toi tout de suite!"
+- Pour approuver  : "Super choix!", "Bonne idée!", "Pas de problème!", "Avec plaisir!", "C'est noté!"
+- INTERDIT : commencer deux répliques consécutives par le même mot
+- INTERDIT : dire "Parfait" plus d'une fois par appel — si tu l'as déjà dit, choisis autre chose
 Réponses courtes — max 2 phrases. Une seule question à la fois.
 
 INFOS DU SALON :
@@ -170,6 +210,13 @@ NUMÉRO APPELANT : ${callerNumber || "inconnu"} ${callerDisplay ? `(${callerDisp
 ═══════════════════════════════════
 FLUX RENDEZ-VOUS — étape par étape
 ═══════════════════════════════════
+
+ÉTAPE 0 — Reconnaissance client (si numéro appelant disponible)
+  → Si tu as un numéro appelant, appelle lookup_existing_client EN PREMIER
+  → Si client trouvé : "Hey [prénom], content de te revoir! C'est quoi qui t'amène aujourd'hui?"
+    → Tu connais déjà son nom et email — saute l'étape 4 (pas besoin de redemander le nom)
+    → Pour l'étape 5, utilise directement son email connu si disponible
+  → Si nouveau client : continue normalement avec l'étape 1
 
 ÉTAPE 1 — Comprendre la demande
   → Écoute la phrase COMPLÈTE avant de répondre
@@ -257,6 +304,12 @@ const TOOLS = [
       },
       required: ["service"],
     },
+  },
+  {
+    type: "function",
+    name: "lookup_existing_client",
+    description: "Cherche si le numéro appelant est déjà un client connu dans Calendly. Appelle au début si on a un numéro appelant, AVANT de demander le nom.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",
@@ -364,6 +417,24 @@ async function runTool(name, args, session) {
     } catch (e) {
       return { error: "Impossible de vérifier les disponibilités." };
     }
+  }
+
+  if (name === "lookup_existing_client") {
+    const phone = session?.callerNumber;
+    if (!phone) return { found: false, message: "Pas de numéro appelant disponible." };
+    console.log(`[LOOKUP] Recherche client pour ${phone}`);
+    const client = await lookupClientByPhone(phone);
+    if (client) {
+      console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
+      return {
+        found: true,
+        name:  client.name,
+        email: client.email,
+        message: `Client existant trouvé : ${client.name} (${client.email}). Salue-le par son prénom et confirme que son info est déjà dans le système.`,
+      };
+    }
+    console.log(`[LOOKUP] Nouveau client`);
+    return { found: false, message: "Nouveau client — demander le nom normalement." };
   }
 
   if (name === "format_caller_number") {
