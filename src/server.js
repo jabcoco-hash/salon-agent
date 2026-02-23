@@ -518,7 +518,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: `L'appel commence. Présente-toi comme l'assistante virtuelle du ${SALON_NAME} à ${SALON_CITY}, dis en une phrase que tu es là pour que les coiffeurs restent concentrés, mentionne qu'on peut parler à quelqu'un si besoin. Termine par "Comment puis-je vous aider aujourd'hui?" et attends.`,
+          text: `L'appel commence. Présente-toi comme l'assistante virtuelle du ${SALON_NAME} à ${SALON_CITY}, dis que tu es là pour que les coiffeurs restent concentrés, et mentionne que pour parler à quelqu'un il suffit de dire "agent" à tout moment. Termine par "Comment puis-je vous aider aujourd'hui?" et attends.`,
         }],
       },
     }));
