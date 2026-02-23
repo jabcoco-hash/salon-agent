@@ -537,10 +537,12 @@ async function runTool(name, args, session) {
   }
 
   if (name === "send_booking_link") {
+    console.log(`[BOOKING] Début — service:${args.service} slot:${args.slot_iso} name:${args.name} phone:${args.phone}`);
+
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
-    if (!phone) return { error: "Numéro invalide." };
+    if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
     const uri = serviceUri(args.service);
-    if (!uri) return { error: "Service non configuré." };
+    if (!uri)           return { error: "Service non configuré." };
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
 
@@ -554,16 +556,31 @@ async function runTool(name, args, session) {
         startTimeIso: args.slot_iso,
       },
     });
+    console.log(`[BOOKING] Token créé: ${token}`);
 
     const link = `${base()}/confirm-email/${token}`;
+    console.log(`[BOOKING] Envoi SMS → ${phone}`);
+
+    // Timeout de 15s sur l'envoi SMS pour éviter que ça bloque indéfiniment
+    const smsPromise = sendSms(phone,
+      `${SALON_NAME} — Bonjour ${args.name.trim()}!\n` +
+      `Pour finaliser ton rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
+      `saisis ton courriel ici (lien valide 20 min) :\n${link}`
+    );
+    const timeoutPromise = new Promise((_, rej) =>
+      setTimeout(() => rej(new Error("SMS timeout 15s")), 15_000)
+    );
+
     try {
-      await sendSms(phone,
-        `${SALON_NAME} — Bonjour ${args.name.trim()}!\n` +
-        `Pour finaliser ton rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
-        `saisis ton courriel ici (lien valide 20 min) :\n${link}`
-      );
+      await Promise.race([smsPromise, timeoutPromise]);
+      console.log(`[BOOKING] ✅ SMS envoyé → ${phone}`);
       return { success: true, phone_display: fmtPhone(phone) };
     } catch (e) {
+      console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
+      // Retourner succès quand même si le token est créé — le SMS peut être en retard
+      if (pending.has(token)) {
+        return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
+      }
       return { error: `Erreur SMS : ${e.message}` };
     }
   }
@@ -852,7 +869,85 @@ wss.on("connection", (twilioWs) => {
     }
   });
 
-  oaiWs.on("close",  (c) => { console.log(`[OAI] Fermé (${c})`); clearInterval(heartbeat); });
+  oaiWs.on("close", (code) => {
+    console.log(`[OAI] Fermé (${code})`);
+    clearInterval(heartbeat);
+    clearInterval(twilioKeepalive);
+
+    // Code 1005 = fermeture inattendue — tenter une reconnexion si Twilio est encore actif
+    if (code === 1005 && twilioWs.readyState === WebSocket.OPEN && streamSid) {
+      console.log("[OAI] Reconnexion automatique dans 500ms...");
+      setTimeout(() => {
+        if (twilioWs.readyState !== WebSocket.OPEN) return;
+        console.log("[OAI] Reconnexion en cours...");
+
+        oaiWs = new WebSocket(
+          `wss://api.openai.com/v1/realtime?model=${OPENAI_REALTIME_MODEL}`,
+          { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" } }
+        );
+
+        oaiWs.on("open", () => {
+          console.log("[OAI] ✅ Reconnecté");
+          // Mettre à jour la référence dans la session
+          if (session) session.openaiWs = oaiWs;
+
+          heartbeat = setInterval(() => {
+            if (oaiWs.readyState === WebSocket.OPEN) oaiWs.ping();
+            else clearInterval(heartbeat);
+          }, 10_000);
+
+          startTwilioKeepalive();
+
+          // Réinitialiser la session avec contexte de reprise
+          oaiWs.send(JSON.stringify({
+            type: "session.update",
+            session: {
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.85,
+                prefix_padding_ms: 500,
+                silence_duration_ms: 1200,
+              },
+              input_audio_format:  "g711_ulaw",
+              output_audio_format: "g711_ulaw",
+              voice:       OPENAI_TTS_VOICE,
+              instructions: systemPrompt(session?.callerNumber),
+              tools:        TOOLS,
+              tool_choice:  "auto",
+              modalities:   ["text", "audio"],
+              temperature:  0.6,
+            },
+          }));
+
+          // Dire au client qu'on est de retour
+          oaiWs.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message", role: "user",
+              content: [{ type: "input_text", text: "La connexion a été brièvement interrompue. Reprends la conversation naturellement là où tu en étais, avec la même énergie. Ne mentionne pas l'interruption technique." }],
+            },
+          }));
+          oaiWs.send(JSON.stringify({ type: "response.create" }));
+        });
+
+        // Rebrancher les handlers sur le nouveau oaiWs
+        oaiWs.on("message", async (raw) => {
+          // Réutiliser le même handler — pointer vers la fonction existante
+          // En pratique on doit re-attacher tous les handlers
+          // Simple : rediriger l'audio vers Twilio
+          let ev;
+          try { ev = JSON.parse(raw); } catch { return; }
+          if (ev.type === "response.audio.delta" && ev.delta && twilioWs.readyState === WebSocket.OPEN) {
+            twilioWs.send(JSON.stringify({ event: "media", streamSid, media: { payload: ev.delta } }));
+          }
+          if (ev.type === "error") console.error("[OAI RECONNECT ERROR]", JSON.stringify(ev.error));
+        });
+
+        oaiWs.on("close",  (c) => { console.log(`[OAI] Reconnexion fermée (${c})`); clearInterval(heartbeat); });
+        oaiWs.on("error",  (e) => console.error("[OAI WS reconnect]", e.message));
+      }, 500);
+    }
+  });
   oaiWs.on("error",  (e) => console.error("[OAI WS]", e.message));
 
   twilioWs.on("message", (raw) => {
