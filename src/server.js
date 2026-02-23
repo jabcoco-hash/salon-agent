@@ -66,10 +66,21 @@ const pending  = new Map(); // token → { expiresAt, payload }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function normalizePhone(raw = "") {
+  if (!raw) return null;
+  // Nettoyer tous les caractères non-numériques
   const d = raw.replace(/\D/g, "");
   if (d.length === 10) return `+1${d}`;
   if (d.length === 11 && d[0] === "1") return `+${d}`;
+  // Format avec indicatif pays 0 (ex: 0514...) 
+  if (d.length === 11 && d[0] === "0") return `+1${d.slice(1)}`;
   return null;
+}
+
+// Compare deux numéros en ignorant le format
+function samePhone(a, b) {
+  const na = normalizePhone(a);
+  const nb = normalizePhone(b);
+  return na && nb && na === nb;
 }
 
 function fmtPhone(e164 = "") {
@@ -105,17 +116,26 @@ const cHeaders = () => ({
 });
 
 async function getSlots(uri, startDate = null, endDate = null) {
-  // Si pas de date spécifique, partir de maintenant + 5min
   const start = startDate ? new Date(startDate) : new Date(Date.now() + 5 * 60 * 1000);
-  // Fenêtre de 7 jours à partir de la date de début
   const end   = endDate   ? new Date(endDate)   : new Date(start.getTime() + 7 * 24 * 3600 * 1000);
-  const url = `https://api.calendly.com/event_type_available_times`
-    + `?event_type=${encodeURIComponent(uri)}`
-    + `&start_time=${encodeURIComponent(start.toISOString())}`
-    + `&end_time=${encodeURIComponent(end.toISOString())}`;
-  const r = await fetch(url, { headers: cHeaders() });
-  if (!r.ok) throw new Error(`Calendly slots ${r.status}: ${await r.text()}`);
-  return (await r.json()).collection?.map(x => x.start_time).filter(Boolean) || [];
+
+  // Calendly limite à 7 jours par requête — si la fenêtre est plus grande, paginer
+  const allSlots = [];
+  let cursor = new Date(start);
+  while (cursor < end) {
+    const chunkEnd = new Date(Math.min(cursor.getTime() + 7 * 24 * 3600 * 1000, end.getTime()));
+    const url = `https://api.calendly.com/event_type_available_times`
+      + `?event_type=${encodeURIComponent(uri)}`
+      + `&start_time=${encodeURIComponent(cursor.toISOString())}`
+      + `&end_time=${encodeURIComponent(chunkEnd.toISOString())}`;
+    const r = await fetch(url, { headers: cHeaders() });
+    if (!r.ok) throw new Error(`Calendly slots ${r.status}: ${await r.text()}`);
+    const slots = (await r.json()).collection?.map(x => x.start_time).filter(Boolean) || [];
+    allSlots.push(...slots);
+    cursor = chunkEnd;
+    if (allSlots.length >= 20) break; // assez de résultats
+  }
+  return allSlots;
 }
 
 async function getEventLocation(uri) {
@@ -173,7 +193,7 @@ async function lookupClientByPhone(phone) {
       const person = result.person;
       // Vérifier que le téléphone correspond exactement
       const phones = person.phoneNumbers || [];
-      const match  = phones.find(p => normalizePhone(p.value || "") === phone);
+      const match  = phones.find(p => samePhone(p.value || "", phone));
       if (match) {
         const name  = person.names?.[0]?.displayName || null;
         const email = person.emailAddresses?.[0]?.value || null;
@@ -193,7 +213,7 @@ async function lookupClientByPhone(phone) {
     for (const result of (j2.results || [])) {
       const person = result.person;
       const phones = person.phoneNumbers || [];
-      const match  = phones.find(p => normalizePhone(p.value || "") === phone);
+      const match  = phones.find(p => samePhone(p.value || "", phone));
       if (match) {
         const name  = person.names?.[0]?.displayName || null;
         const email = person.emailAddresses?.[0]?.value || null;
@@ -366,6 +386,7 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
   → Si le client dit NON (ou "non merci", "c'est tout", "ça va", "c'est beau", "non c'est bon") :
       Choisis UNE exclamation parmi : "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Très bien!", "Avec plaisir!"
       Puis DIS OBLIGATOIREMENT selon l'heure de l'appel :
+      → Appelle get_current_time pour connaître l'heure locale exacte avant de choisir
       → Avant midi  → "[exclamation]! Alors je te souhaite une belle matinée! À bientôt au ${SALON_NAME}!"
       → Midi à 17h  → "[exclamation]! Alors je te souhaite un bel après-midi! À bientôt au ${SALON_NAME}!"
       → Après 17h   → "[exclamation]! Alors je te souhaite une belle soirée! À bientôt au ${SALON_NAME}!"
@@ -380,6 +401,8 @@ RÈGLES
 - Ne pose JAMAIS une question dont tu as déjà la réponse
 - N'invente JAMAIS une réponse du client — si tu n'entends pas bien : "Désolée, tu peux répéter?"
 - Ne demande JAMAIS l'email — le lien SMS s'en occupe
+- Ne propose JAMAIS de liste d'attente — si pas de dispo, propose une autre période ou semaine
+- Ne propose JAMAIS de rappeler le client — tu ne peux pas faire ça
 - transfer_to_agent SEULEMENT si le client dit explicitement "agent", "parler à quelqu'un", "humain", "réceptionniste", ou équivalent
 - Un prénom ou nom de personne N'EST PAS une demande de transfert
 - Si tu n'es pas sûre d'avoir compris une demande de transfert, demande : "Tu veux que je te transfère à quelqu'un de l'équipe?"`;
@@ -454,6 +477,12 @@ const TOOLS = [
       },
       required: ["topic"],
     },
+  },
+  {
+    type: "function",
+    name: "get_current_time",
+    description: "Retourne l'heure locale exacte au Québec. Appelle AVANT de souhaiter une belle matinée/après-midi/soirée pour utiliser la bonne salutation.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",
@@ -658,6 +687,15 @@ ${link}`
   if (name === "get_salon_info") {
     const info = { adresse: SALON_ADDRESS, heures: SALON_HOURS, prix: SALON_PRICE_LIST };
     return info[args.topic] ? { [args.topic]: info[args.topic] } : { error: "Sujet inconnu." };
+  }
+
+  if (name === "get_current_time") {
+    const now = new Date();
+    const localStr = now.toLocaleString("fr-CA", { timeZone: CALENDLY_TIMEZONE, hour: "2-digit", minute: "2-digit", hour12: false });
+    const hour = parseInt(new Date(now.toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE })).getHours());
+    const periode = hour < 12 ? "matin" : hour < 17 ? "après-midi" : "soir";
+    const salutation = hour < 12 ? "belle matinée" : hour < 17 ? "bel après-midi" : "belle soirée";
+    return { heure_locale: localStr, heure: hour, periode, salutation_correcte: salutation };
   }
 
   if (name === "end_call") {
@@ -908,7 +946,7 @@ wss.on("connection", (twilioWs) => {
                 .then(() => console.log("[END] ✅ Appel raccroché"))
                 .catch(e => console.error("[END] Erreur raccrochage:", e.message));
             }
-          }, 3000);
+          }, 5000); // 5s pour laisser la phrase complète se terminer
           pendingTools.delete(ev.call_id);
           break;
         }
