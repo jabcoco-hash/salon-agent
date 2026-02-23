@@ -146,8 +146,16 @@ async function getEventLocation(uri) {
   return Array.isArray(locs) && locs.length ? locs[0] : null;
 }
 
-// ─── Google OAuth token (sauvegardé en mémoire après /oauth/callback) ──────────
-let googleTokens = null; // { access_token, refresh_token, expiry_date }
+// ─── Google OAuth token ───────────────────────────────────────────────────────
+// Recharger le refresh_token depuis Railway au démarrage
+let googleTokens = process.env.GOOGLE_REFRESH_TOKEN ? {
+  access_token:  null, // sera rafraîchi automatiquement
+  refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
+  expiry_date:   0,    // forcer un refresh immédiat
+} : null;
+
+if (googleTokens) console.log("[GOOGLE] ✅ Refresh token chargé depuis Railway");
+else console.log("[GOOGLE] ⚠️ Pas de token — visite /oauth/start pour connecter");
 
 async function getGoogleAccessToken() {
   if (!googleTokens) return null;
@@ -332,16 +340,19 @@ FLUX RENDEZ-VOUS — étape par étape
   → Écoute la phrase COMPLÈTE avant de répondre
   → Le client peut donner plusieurs infos d'un coup (type + jour + période)
   → Exemple : "coupe homme mercredi après-midi" = service:homme, jour:mercredi, periode:après-midi
-  → Si le type de coupe est clair → passe à l'étape 2 SANS le redemander
-  → Si pas clair → demande : "C'est pour une coupe homme, femme ou non binaire?"
+  → RÈGLE ABSOLUE : tu dois connaître le TYPE DE COUPE avant d'appeler get_available_slots
+  → Si le type de coupe N'EST PAS mentionné → demande D'ABORD : "C'est pour une coupe homme, femme ou non binaire?"
+  → Attends la réponse → ENSUITE seulement appelle get_available_slots
+  → Ne saute JAMAIS cette question si le type est inconnu
 
 ÉTAPE 2 — Disponibilités
-  → Dis "Ok laisse-moi vérifier ça!" puis appelle get_available_slots avec tous les filtres
-  → Propose les créneaux disponibles et termine par : "Lequel te convient le mieux?"
-  → Exemple : "J'ai lundi à 14h, mercredi à 10h, ou vendredi à 16h — lequel te convient le mieux?"
-  → Si un seul créneau : "J'ai [jour] à [heure] — ça te convient?"
-  → Si aucune dispo avec le filtre : propose des alternatives
-  → Attends que le client choisisse
+  → Dis "Patiente un instant, je vérifie ça!" puis appelle get_available_slots UNE SEULE FOIS
+  → Si créneaux trouvés → propose-les : "J'ai [jour] à [heure], [jour] à [heure] — lequel te convient le mieux?"
+  → Si le client veut d'autres options → rappelle get_available_slots avec offset_semaines+1, UNE SEULE FOIS
+  → Si aucune dispo après 2 tentatives → dis :
+    "Désolée, j'arrive pas à trouver de créneau pour cette période. Laisse-moi te transférer à quelqu'un de l'équipe!"
+    puis appelle transfer_to_agent
+  → Ne boucle JAMAIS plus de 2 fois sur get_available_slots pour la même demande
 
 ÉTAPE 3 — Confirmation créneau
   → Confirme : "Parfait, je te prends [jour] à [heure]!"
@@ -767,14 +778,19 @@ app.get("/oauth/callback", async (req, res) => {
 
     googleTokens = {
       access_token:  j.access_token,
-      refresh_token: j.refresh_token,
+      refresh_token: j.refresh_token || process.env.GOOGLE_REFRESH_TOKEN,
       expiry_date:   Date.now() + (j.expires_in || 3600) * 1000,
     };
     console.log("[GOOGLE] ✅ OAuth connecté — token reçu");
+    const refreshToken = j.refresh_token || "(déjà configuré)";
     res.type("text/html").send(`
       <h2>✅ Google Contacts connecté!</h2>
-      <p>Marie peut maintenant reconnaître tes clients existants.</p>
-      <p><strong>Important :</strong> Ce token est en mémoire — si Railway redémarre, visite à nouveau <a href="/oauth/start">/oauth/start</a>.</p>
+      ${j.refresh_token ? `
+      <p>⚠️ <strong>Action requise pour que ça survive aux redémarrages Railway :</strong></p>
+      <p>Copie cette variable dans Railway → Settings → Variables :</p>
+      <pre style="background:#f0f0f0;padding:12px;border-radius:8px;word-break:break-all">GOOGLE_REFRESH_TOKEN = ${j.refresh_token}</pre>
+      <p>Une fois ajoutée, tu n'auras plus jamais à refaire cette étape.</p>
+      ` : '<p>✅ Refresh token déjà configuré dans Railway.</p>'}
       <p><a href="/">← Retour</a></p>
     `);
   } catch (e) {
