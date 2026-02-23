@@ -707,13 +707,33 @@ wss.on("connection", (twilioWs) => {
     { headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, "OpenAI-Beta": "realtime=v1" } }
   );
 
+  // Silence G.711 µ-law (160 octets = 20ms à 8000Hz) encodé base64
+  const SILENCE_PAYLOAD = Buffer.alloc(160, 0xFF).toString("base64");
+
   oaiWs.on("open", () => {
     console.log("[OAI] Connecté");
+    // Ping OpenAI toutes les 10s pour garder le WS vivant
     heartbeat = setInterval(() => {
       if (oaiWs.readyState === WebSocket.OPEN) oaiWs.ping();
       else clearInterval(heartbeat);
     }, 10_000);
   });
+
+  // Keepalive audio vers Twilio toutes les 10s pour éviter le timeout de stream
+  let twilioKeepalive = null;
+  function startTwilioKeepalive() {
+    twilioKeepalive = setInterval(() => {
+      if (twilioWs.readyState === WebSocket.OPEN && streamSid) {
+        twilioWs.send(JSON.stringify({
+          event: "media",
+          streamSid,
+          media: { payload: SILENCE_PAYLOAD },
+        }));
+      } else {
+        clearInterval(twilioKeepalive);
+      }
+    }, 10_000);
+  }
 
   function initOAI() {
     if (!oaiWs || oaiWs.readyState !== WebSocket.OPEN) return;
@@ -862,6 +882,9 @@ wss.on("connection", (twilioWs) => {
 
         console.log(`[Twilio] Stream — sid: ${sid} — caller: ${session.callerNumber}`);
 
+        // Démarrer le keepalive audio Twilio
+        startTwilioKeepalive();
+
         if (oaiWs.readyState === WebSocket.OPEN) initOAI();
         else oaiWs.once("open", initOAI);
         break;
@@ -879,12 +902,17 @@ wss.on("connection", (twilioWs) => {
       case "stop":
         console.log("[Twilio] Stream arrêté");
         clearInterval(heartbeat);
+        clearInterval(twilioKeepalive);
         oaiWs?.close();
         break;
     }
   });
 
-  twilioWs.on("close", () => { clearInterval(heartbeat); oaiWs?.close(); });
+  twilioWs.on("close", () => {
+    clearInterval(heartbeat);
+    clearInterval(twilioKeepalive);
+    oaiWs?.close();
+  });
   twilioWs.on("error", (e) => console.error("[Twilio WS]", e.message));
 });
 
