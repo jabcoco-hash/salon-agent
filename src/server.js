@@ -223,7 +223,9 @@ RÈGLES
 - Ne pose JAMAIS une question dont tu as déjà la réponse
 - N'invente JAMAIS une réponse du client — si tu n'entends pas bien : "Désolée, tu peux répéter?"
 - Ne demande JAMAIS l'email — le lien SMS s'en occupe
-- transfer_to_agent SEULEMENT si le client le demande explicitement`;
+- transfer_to_agent SEULEMENT si le client dit explicitement "agent", "parler à quelqu'un", "humain", "réceptionniste", ou équivalent
+- Un prénom ou nom de personne N'EST PAS une demande de transfert
+- Si tu n'es pas sûre d'avoir compris une demande de transfert, demande : "Tu veux que je te transfère à quelqu'un de l'équipe?"`;
 }
 
 // ─── Outils ───────────────────────────────────────────────────────────────────
@@ -425,6 +427,21 @@ async function runTool(name, args, session) {
 
   if (name === "transfer_to_agent") {
     session.shouldTransfer = true;
+    if (twilioClient && session.twilioCallSid && FALLBACK_NUMBER) {
+      setTimeout(async () => {
+        try {
+          await twilioClient.calls(session.twilioCallSid)
+            .update({
+              twiml: `<Response><Say language="fr-CA" voice="alice">Veuillez patienter, je vous transfère à un membre de l'équipe.</Say><Dial>${FALLBACK_NUMBER}</Dial></Response>`
+            });
+          console.log(`[TRANSFER] ✅ Transfert vers ${FALLBACK_NUMBER}`);
+        } catch (e) {
+          console.error("[TRANSFER] ❌ Erreur:", e.message);
+        }
+      }, 1500);
+    } else {
+      console.warn("[TRANSFER] FALLBACK_NUMBER non configuré ou twilioClient manquant");
+    }
     return { transferring: true };
   }
 
