@@ -104,9 +104,11 @@ const cHeaders = () => ({
   "Content-Type": "application/json",
 });
 
-async function getSlots(uri) {
-  const start = new Date(Date.now() + 5 * 60 * 1000);
-  const end   = new Date(start.getTime() + 7 * 24 * 3600 * 1000);
+async function getSlots(uri, startDate = null, endDate = null) {
+  // Si pas de date spécifique, partir de maintenant + 5min
+  const start = startDate ? new Date(startDate) : new Date(Date.now() + 5 * 60 * 1000);
+  // Fenêtre de 7 jours à partir de la date de début
+  const end   = endDate   ? new Date(endDate)   : new Date(start.getTime() + 7 * 24 * 3600 * 1000);
   const url = `https://api.calendly.com/event_type_available_times`
     + `?event_type=${encodeURIComponent(uri)}`
     + `&start_time=${encodeURIComponent(start.toISOString())}`
@@ -292,12 +294,19 @@ NUMÉRO APPELANT : ${callerNumber || "inconnu"} ${callerDisplay ? `(${callerDisp
 FLUX RENDEZ-VOUS — étape par étape
 ═══════════════════════════════════
 
-ÉTAPE 0 — Reconnaissance client (si numéro appelant disponible)
-  → Si tu as un numéro appelant, appelle lookup_existing_client EN PREMIER
-  → Si client trouvé : "Hey [prénom], content de te revoir! C'est quoi qui t'amène aujourd'hui?"
-    → Tu connais déjà son nom et email — saute l'étape 4 (pas besoin de redemander le nom)
-    → Pour l'étape 5, utilise directement son email connu si disponible
-  → Si nouveau client : continue normalement avec l'étape 1
+ÉTAPE 0 — Reconnaissance client (en arrière-plan, silencieux)
+  → Fais ton intro normale : "Bonjour! Moi c'est Marie..."
+  → NE mentionne PAS que tu cherches un dossier — fais-le discrètement
+  → Quand le client demande un rendez-vous, appelle lookup_existing_client
+    en même temps que get_available_slots (les deux ensemble)
+  → NE DIS PAS "je vérifie ton dossier" — enchaîne naturellement :
+    "Ok laisse-moi vérifier les disponibilités!"
+    (la recherche de dossier se fait en coulisse pendant ce temps)
+  → Quand tu as les résultats :
+    - CLIENT TROUVÉ avec email → salue par prénom : "Hey [prénom], content de te revoir!"
+      puis plus tard confirme : "J'ai ton courriel [email] — c'est toujours bon?"
+    - CLIENT TROUVÉ sans email → salue par prénom, continue normalement
+    - NOUVEAU CLIENT → flux normal, pas de mention de dossier
 
 ÉTAPE 1 — Comprendre la demande
   → Écoute la phrase COMPLÈTE avant de répondre
@@ -325,13 +334,18 @@ FLUX RENDEZ-VOUS — étape par étape
   → Ne demande PAS de confirmation du nom, ne fais PAS de pause, ne dis PAS "parfait" et arrête
   → Combine la confirmation du nom ET la question du numéro en UNE SEULE phrase fluide
 
-ÉTAPE 5 — Numéro de téléphone
-  ${callerNumber ? `→ Tu as le numéro appelant. Appelle d'abord format_caller_number pour obtenir la version lisible.
-  → Dis EXACTEMENT : "Parfait! Je vais t'envoyer une confirmation par SMS pour que tu puisses saisir ton courriel. Je t'envoie ça au [numéro formaté]... C'est bien ça?"
-  → Exemple : "Je t'envoie ça au cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un... C'est bien ça?"
-  → La phrase se termine par "C'est bien ça?" avec une intonation montante
-  → Si OUI → appelle send_booking_link directement avec ce numéro
-  → Si NON → demande le numéro vocalement (voir ci-dessous)` : `→ Pas de numéro appelant → demande vocalement (voir ci-dessous)`}
+ÉTAPE 5 — Confirmation numéro et courriel
+  ${callerNumber ? `→ Appelle format_caller_number pour obtenir la version lisible du numéro
+  → Dis : "Je t'envoie la confirmation au [numéro formaté]... C'est bien ça?"
+  → Si OUI → utilise ce numéro
+  → Si NON → demande le numéro vocalement` : `→ Pas de numéro appelant → demande vocalement`}
+  
+  SI CLIENT EXISTANT AVEC EMAIL CONFIRMÉ à l'étape 0 :
+  → Tu as déjà le courriel — appelle directement send_booking_link avec l'email connu
+  → Dis : "Je t'envoie un lien de confirmation par texto et par courriel!"
+  
+  SI NOUVEAU CLIENT ou email non confirmé :
+  → send_booking_link envoie un SMS avec un lien pour saisir le courriel
 
 COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
   → Dis : "Ok, dis-moi ton numéro de cellulaire."
@@ -376,13 +390,15 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux disponibles. Passe jour et periode si le client les a mentionnés.",
+    description: "Récupère les créneaux disponibles. Utilise date_debut pour chercher à partir d'une date future (ex: 'mars', 'la semaine prochaine', 'dans 2 semaines'). Utilise offset pour voir plus de créneaux si le client veut d'autres options.",
     parameters: {
       type: "object",
       properties: {
-        service:  { type: "string", enum: ["homme", "femme", "nonbinaire"] },
-        jour:     { type: "string", description: "Jour souhaité ex: 'lundi', 'mercredi'. Omets si non mentionné." },
-        periode:  { type: "string", enum: ["matin", "après-midi", "soir"], description: "Période souhaitée. Omets si non mentionnée." },
+        service:    { type: "string", enum: ["homme", "femme", "nonbinaire"] },
+        jour:       { type: "string", description: "Jour souhaité ex: 'lundi', 'mercredi'. Omets si non mentionné." },
+        periode:    { type: "string", enum: ["matin", "après-midi", "soir"], description: "Période souhaitée. Omets si non mentionnée." },
+        date_debut: { type: "string", description: "Date ISO (YYYY-MM-DD) ou description ex: '2026-03-01' pour chercher à partir de mars. Omets pour chercher à partir d'aujourd'hui." },
+        offset_semaines: { type: "number", description: "Décaler la recherche de N semaines. Ex: 1 = semaine prochaine, 2 = dans 2 semaines. Utilise quand le client veut d'autres options que celles déjà proposées." },
       },
       required: ["service"],
     },
@@ -414,7 +430,7 @@ const TOOLS = [
   {
     type: "function",
     name: "send_booking_link",
-    description: "Envoie le SMS de confirmation. Appelle seulement après confirmation du numéro.",
+    description: "Envoie le SMS de confirmation. Si email connu (client existant), crée directement le RDV Calendly et envoie la confirmation complète. Sinon envoie un lien SMS pour saisir le courriel.",
     parameters: {
       type: "object",
       properties: {
@@ -422,6 +438,7 @@ const TOOLS = [
         slot_iso: { type: "string" },
         name:     { type: "string" },
         phone:    { type: "string", description: "Numéro validé en format E.164 ou 10 chiffres" },
+        email:    { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
       },
       required: ["service", "slot_iso", "name", "phone"],
     },
@@ -509,14 +526,17 @@ async function runTool(name, args, session) {
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
       return {
-        found: true,
-        name:  client.name,
-        email: client.email,
-        message: `Client existant trouvé : ${client.name} (${client.email}). Salue-le par son prénom et confirme que son info est déjà dans le système.`,
+        found:  true,
+        name:   client.name,
+        email:  client.email || null,
+        has_email: !!client.email,
+        message: client.email
+          ? `Client existant : ${client.name}, courriel : ${client.email}. Salue-le par son prénom, dis que tu as déjà son dossier, et confirme le courriel : "J'ai déjà ton courriel ${client.email} dans notre système — c'est toujours bon?"`
+          : `Client existant : ${client.name}, mais pas de courriel dans le dossier. Salue-le par son prénom et demande son courriel.`,
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
-    return { found: false, message: "Nouveau client — demander le nom normalement." };
+    return { found: false, message: "Nouveau client — demande le nom normalement." };
   }
 
   if (name === "format_caller_number") {
@@ -551,7 +571,7 @@ async function runTool(name, args, session) {
   }
 
   if (name === "send_booking_link") {
-    console.log(`[BOOKING] Début — service:${args.service} slot:${args.slot_iso} name:${args.name} phone:${args.phone}`);
+    console.log(`[BOOKING] Début — service:${args.service} slot:${args.slot_iso} name:${args.name} phone:${args.phone} email:${args.email || "inconnu"}`);
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
@@ -560,41 +580,77 @@ async function runTool(name, args, session) {
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
 
+    const name = args.name.trim();
+
+    // ── Si email déjà connu → créer le RDV Calendly directement ─────────────
+    if (args.email?.trim()) {
+      const email = args.email.trim().toLowerCase();
+      console.log(`[BOOKING] Email connu — création RDV Calendly directement pour ${email}`);
+      try {
+        const result = await createInvitee({ uri, startTimeIso: args.slot_iso, name, email });
+        const cancelUrl     = result?.resource?.cancel_url     || "";
+        const rescheduleUrl = result?.resource?.reschedule_url || "";
+
+        await saveContactToGoogle({ name, email, phone });
+
+        const smsBody =
+          `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!
+
+` +
+          `👤 Nom        : ${name}
+` +
+          `✉️ Courriel   : ${email}
+` +
+          `✂️ Service    : ${serviceLabel(args.service)}
+` +
+          `📅 Date/heure : ${slotToFrench(args.slot_iso)}
+` +
+          `📍 Adresse    : ${SALON_ADDRESS}
+
+` +
+          (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}
+` : "") +
+          (cancelUrl     ? `❌ Annuler  : ${cancelUrl}
+`     : "") +
+          `
+À bientôt! — ${SALON_NAME}`;
+
+        await Promise.race([
+          sendSms(phone, smsBody),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout")), 15_000)),
+        ]);
+        console.log(`[BOOKING] ✅ RDV créé et SMS envoyé → ${phone}`);
+        return { success: true, direct: true, phone_display: fmtPhone(phone), email };
+      } catch (e) {
+        console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
+        return { error: `Impossible de créer le rendez-vous : ${e.message}` };
+      }
+    }
+
+    // ── Sinon → envoyer lien SMS pour saisir le courriel ─────────────────────
     const token = crypto.randomBytes(16).toString("hex");
     pending.set(token, {
       expiresAt: Date.now() + 20 * 60 * 1000,
-      payload: {
-        phone, name: args.name.trim(),
-        service: args.service,
-        eventTypeUri: uri,
-        startTimeIso: args.slot_iso,
-      },
+      payload: { phone, name, service: args.service, eventTypeUri: uri, startTimeIso: args.slot_iso },
     });
     console.log(`[BOOKING] Token créé: ${token}`);
 
     const link = `${base()}/confirm-email/${token}`;
-    console.log(`[BOOKING] Envoi SMS → ${phone}`);
-
-    // Timeout de 15s sur l'envoi SMS pour éviter que ça bloque indéfiniment
     const smsPromise = sendSms(phone,
-      `${SALON_NAME} — Bonjour ${args.name.trim()}!\n` +
+      `${SALON_NAME} — Bonjour ${name}!
+` +
       `Pour finaliser ton rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
-      `saisis ton courriel ici (lien valide 20 min) :\n${link}`
-    );
-    const timeoutPromise = new Promise((_, rej) =>
-      setTimeout(() => rej(new Error("SMS timeout 15s")), 15_000)
+      `saisis ton courriel ici (lien valide 20 min) :
+${link}`
     );
 
     try {
-      await Promise.race([smsPromise, timeoutPromise]);
-      console.log(`[BOOKING] ✅ SMS envoyé → ${phone}`);
+      await Promise.race([smsPromise, new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout 15s")), 15_000))]);
+      console.log(`[BOOKING] ✅ SMS lien envoyé → ${phone}`);
       return { success: true, phone_display: fmtPhone(phone) };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
-      // Retourner succès quand même si le token est créé — le SMS peut être en retard
-      if (pending.has(token)) {
-        return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
-      }
+      if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
       return { error: `Erreur SMS : ${e.message}` };
     }
   }
