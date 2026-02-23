@@ -211,10 +211,11 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
 
 ÉTAPE 6 — Envoi SMS
   → Appelle send_booking_link avec service + slot_iso + name + phone
-  → Quand send_booking_link retourne success:true, dis :
-    "Parfait! Vérifie tes textos — t'as reçu un lien pour entrer ton courriel et confirmer. À bientôt au ${SALON_NAME}!"
-  → Appelle IMMÉDIATEMENT end_call après cette phrase pour raccrocher
-  → N'attends PAS de réponse du client — raccroche après avoir dit au revoir
+  → Quand send_booking_link retourne success:true, dis EXACTEMENT :
+    "Parfait! Tu vas recevoir un lien par texto pour saisir ton courriel et ainsi confirmer ton rendez-vous. Merci de nous faire confiance et bonne [matin/après-midi/soirée selon l'heure actuelle]!"
+  → Adapte la salutation finale à l'heure : avant midi = "bonne matinée", entre midi et 17h = "bonne après-midi", après 17h = "bonne soirée"
+  → Appelle IMMÉDIATEMENT end_call après cette phrase
+  → N'attends PAS de réponse du client
 
 ═══════════════════════
 RÈGLES
