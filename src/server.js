@@ -195,8 +195,9 @@ FLUX RENDEZ-VOUS — étape par étape
 
 ÉTAPE 5 — Numéro de téléphone
   ${callerNumber ? `→ Tu as le numéro appelant. Appelle d'abord format_caller_number pour obtenir la version lisible.
-  → Dis EXACTEMENT : "Parfait! Je vais t'envoyer une confirmation par SMS pour que tu puisses saisir ton courriel. Je t'envoie ça au [numéro formaté]?"
-  → Exemple : "Je t'envoie ça au cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un?"
+  → Dis EXACTEMENT : "Parfait! Je vais t'envoyer une confirmation par SMS pour que tu puisses saisir ton courriel. Je t'envoie ça au [numéro formaté]... C'est bien ça?"
+  → Exemple : "Je t'envoie ça au cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un... C'est bien ça?"
+  → La phrase se termine par "C'est bien ça?" avec une intonation montante
   → Si OUI → appelle send_booking_link directement avec ce numéro
   → Si NON → demande le numéro vocalement (voir ci-dessous)` : `→ Pas de numéro appelant → demande vocalement (voir ci-dessous)`}
 
@@ -204,18 +205,22 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
   → Dis : "Ok, dis-moi ton numéro de cellulaire."
   → Appelle normalize_and_confirm_phone avec le numéro entendu
   → La fonction retourne le numéro — dis EXACTEMENT :
-    "J'ai bien le [3 premiers chiffres], [3 suivants], [4 derniers] — c'est ça?"
-    Exemple : "J'ai bien le cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un — c'est ça?"
+    "J'ai bien le [3 premiers chiffres], [3 suivants], [4 derniers]... C'est bien ça?"
+    Exemple : "J'ai bien le cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un... C'est bien ça?"
+    → La phrase se termine par "C'est bien ça?" avec une intonation montante — c'est une vraie question
   → Si OUI → appelle send_booking_link
   → Si NON → redemande (max 3 fois)
 
 ÉTAPE 6 — Envoi SMS
   → Appelle send_booking_link avec service + slot_iso + name + phone
-  → Quand send_booking_link retourne success:true, dis EXACTEMENT :
-    "Parfait! Tu vas recevoir un lien par texto pour saisir ton courriel et ainsi confirmer ton rendez-vous. Merci de nous faire confiance et bonne [matin/après-midi/soirée selon l'heure actuelle]!"
-  → Adapte la salutation finale à l'heure : avant midi = "bonne matinée", entre midi et 17h = "bonne après-midi", après 17h = "bonne soirée"
-  → Appelle IMMÉDIATEMENT end_call après cette phrase
-  → N'attends PAS de réponse du client
+  → Quand send_booking_link retourne success:true, dis :
+    "Parfait! Tu vas recevoir un lien par texto pour saisir ton courriel et ainsi confirmer ton rendez-vous. Est-ce que je peux faire autre chose pour toi aujourd'hui?"
+  → ATTENDS la réponse du client — NE raccroche PAS avant
+  → Si le client dit NON (ou "non merci", "c'est tout", "ça va", "c'est beau") :
+      Dis : "Parfait! Merci de nous faire confiance et bonne [matinée/après-midi/soirée selon l'heure]!"
+      Puis appelle end_call SEULEMENT après avoir terminé cette phrase
+  → Si le client a une autre question → réponds normalement et continue
+  → end_call NE doit JAMAIS être appelé avant d'avoir reçu la réponse du client
 
 ═══════════════════════
 RÈGLES
@@ -583,7 +588,7 @@ wss.on("connection", (twilioWs) => {
         console.log(`[TOOL RESULT] ${tool.name}:`, JSON.stringify(result));
 
         if (session?.shouldHangup) {
-          // Raccrocher via Twilio REST après 1.5s pour laisser l'audio finir
+          // Raccrocher après 3s pour laisser l'audio finir complètement
           setTimeout(() => {
             if (twilioClient && session.twilioCallSid) {
               twilioClient.calls(session.twilioCallSid)
@@ -591,7 +596,7 @@ wss.on("connection", (twilioWs) => {
                 .then(() => console.log("[END] ✅ Appel raccroché"))
                 .catch(e => console.error("[END] Erreur raccrochage:", e.message));
             }
-          }, 1500);
+          }, 3000);
           pendingTools.delete(ev.call_id);
           break;
         }
