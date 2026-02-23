@@ -210,9 +210,12 @@ async function lookupClientByPhone(phone) {
 
 async function saveContactToGoogle({ name, email, phone }) {
   const token = await getGoogleAccessToken();
-  if (!token) return;
+  if (!token) {
+    console.warn("[GOOGLE] ❌ saveContact — pas de token Google. Visite /oauth/start pour connecter.");
+    return;
+  }
   try {
-    await fetch("https://people.googleapis.com/v1/people:createContact", {
+    const r = await fetch("https://people.googleapis.com/v1/people:createContact", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -221,9 +224,18 @@ async function saveContactToGoogle({ name, email, phone }) {
         phoneNumbers:   [{ value: phone, type: "mobile" }],
       }),
     });
-    console.log(`[GOOGLE] ✅ Contact créé: ${name}`);
+    const j = await r.json();
+    if (!r.ok) {
+      console.error(`[GOOGLE] ❌ Erreur création contact: ${r.status}`, JSON.stringify(j));
+      // Si erreur 403 = scope insuffisant
+      if (r.status === 403) {
+        console.error("[GOOGLE] ❌ Scope insuffisant — revisite /oauth/start (scope contacts requis, pas contacts.readonly)");
+      }
+      return;
+    }
+    console.log(`[GOOGLE] ✅ Contact créé: ${name} (${email}) — ${phone}`);
   } catch (e) {
-    console.warn("[GOOGLE] Erreur création contact:", e.message);
+    console.error("[GOOGLE] ❌ Erreur création contact:", e.message);
   }
 }
 
@@ -264,8 +276,9 @@ RÈGLE ABSOLUE SUR LES EXPRESSIONS — tu dois varier à chaque réplique, JAMAI
 - Pour acquiescer : "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Ok super!", "Très bien!", "Wow, super!", "Absolument!", "Ben oui!", "Pour sûr!"
 - Pour patienter  : "Laisse-moi vérifier ça!", "Une seconde!", "Je regarde ça!", "Je vérifie pour toi tout de suite!"
 - Pour approuver  : "Super choix!", "Bonne idée!", "Pas de problème!", "Avec plaisir!", "C'est noté!"
+- INTERDIT ABSOLU : dire "Parfait" — ce mot est BANNI pour tout l'appel, ne l'utilise JAMAIS
 - INTERDIT : commencer deux répliques consécutives par le même mot
-- INTERDIT : dire "Parfait" plus d'une fois par appel — si tu l'as déjà dit, choisis autre chose
+- À chaque réplique, choisis un mot d'acquiescement DIFFÉRENT de celui utilisé juste avant
 Réponses courtes — max 2 phrases. Une seule question à la fois.
 
 INFOS DU SALON :
@@ -333,18 +346,19 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
 ÉTAPE 6 — Envoi SMS
   → Appelle send_booking_link avec service + slot_iso + name + phone
   → Quand send_booking_link retourne success:true, dis :
-    "Parfait! Tu vas recevoir un lien par texto pour saisir ton courriel et ainsi confirmer ton rendez-vous. Est-ce que je peux faire autre chose pour toi aujourd'hui?"
+    "Tu vas recevoir un lien par texto pour saisir ton courriel et ainsi confirmer ton rendez-vous. Est-ce que je peux faire autre chose pour toi aujourd'hui?"
+    (NOTE : ne commence PAS cette phrase par "Parfait" — ce mot est BANNI)
   → ATTENDS la réponse du client — NE raccroche PAS avant
   → Si le client dit NON (ou "non merci", "c'est tout", "ça va", "c'est beau", "non c'est bon") :
-      Réponds avec UNE exclamation naturelle choisie aléatoirement parmi :
-      "Parfait!", "Excellent!", "D'accord!", "Ok super!", "C'est beau!", "Génial!", "Pas de problème!", "Très bien!"
-      Puis dis : "Alors je te souhaite une belle [matinée/après-midi/soirée selon l'heure actuelle]! À bientôt au ${SALON_NAME}!"
-      → Avant midi → "belle matinée"
-      → Entre midi et 17h → "bel après-midi"  
-      → Après 17h → "belle soirée"
-      Puis appelle end_call SEULEMENT après avoir terminé cette phrase
+      Choisis UNE exclamation parmi : "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Très bien!", "Avec plaisir!"
+      Puis DIS OBLIGATOIREMENT selon l'heure de l'appel :
+      → Avant midi  → "[exclamation]! Alors je te souhaite une belle matinée! À bientôt au ${SALON_NAME}!"
+      → Midi à 17h  → "[exclamation]! Alors je te souhaite un bel après-midi! À bientôt au ${SALON_NAME}!"
+      → Après 17h   → "[exclamation]! Alors je te souhaite une belle soirée! À bientôt au ${SALON_NAME}!"
+      → Cette phrase de salutation EST OBLIGATOIRE — ne saute pas cette étape
+      → Appelle end_call SEULEMENT après avoir prononcé la salutation complète
   → Si le client a une autre question → réponds normalement et continue
-  → end_call NE doit JAMAIS être appelé avant d'avoir reçu la réponse du client
+  → end_call NE doit JAMAIS être appelé avant d'avoir dit la salutation
 
 ═══════════════════════
 RÈGLES
