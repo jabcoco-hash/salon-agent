@@ -176,7 +176,9 @@ FLUX RENDEZ-VOUS — étape par étape
 
 ÉTAPE 2 — Disponibilités
   → Dis "Ok laisse-moi vérifier ça!" puis appelle get_available_slots avec tous les filtres
-  → Propose les créneaux : "J'ai [jour] à [heure] — ça te convient?"
+  → Propose les créneaux disponibles et termine par : "Lequel te convient le mieux?"
+  → Exemple : "J'ai lundi à 14h, mercredi à 10h, ou vendredi à 16h — lequel te convient le mieux?"
+  → Si un seul créneau : "J'ai [jour] à [heure] — ça te convient?"
   → Si aucune dispo avec le filtre : propose des alternatives
   → Attends que le client choisisse
 
@@ -186,8 +188,10 @@ FLUX RENDEZ-VOUS — étape par étape
 
 ÉTAPE 4 — Nom
   → Demande : "C'est à quel nom?"
-  → Quand le client répond, confirme chaleureusement : "Parfait [prénom]!"
-  → OBLIGATOIRE — attends la réponse avant de passer à l'étape 5
+  → Dès que le client donne son nom, ENCHAÎNE IMMÉDIATEMENT sans pause :
+    "Parfait [prénom]! [phrase de l'étape 5 directement]"
+  → Ne demande PAS de confirmation du nom, ne fais PAS de pause, ne dis PAS "parfait" et arrête
+  → Combine la confirmation du nom ET la question du numéro en UNE SEULE phrase fluide
 
 ÉTAPE 5 — Numéro de téléphone
   ${callerNumber ? `→ Tu as le numéro appelant. Appelle d'abord format_caller_number pour obtenir la version lisible.
@@ -207,8 +211,10 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
 
 ÉTAPE 6 — Envoi SMS
   → Appelle send_booking_link avec service + slot_iso + name + phone
-  → Dis : "Parfait! Vérifie tes textos — t'as reçu un lien pour entrer ton courriel et confirmer. À bientôt au ${SALON_NAME}!"
-  → Conversation TERMINÉE — n'appelle PAS transfer_to_agent après ça
+  → Quand send_booking_link retourne success:true, dis :
+    "Parfait! Vérifie tes textos — t'as reçu un lien pour entrer ton courriel et confirmer. À bientôt au ${SALON_NAME}!"
+  → Appelle IMMÉDIATEMENT end_call après cette phrase pour raccrocher
+  → N'attends PAS de réponse du client — raccroche après avoir dit au revoir
 
 ═══════════════════════
 RÈGLES
@@ -279,6 +285,12 @@ const TOOLS = [
       },
       required: ["topic"],
     },
+  },
+  {
+    type: "function",
+    name: "end_call",
+    description: "Raccroche l'appel proprement. Appelle UNIQUEMENT après avoir dit au revoir suite à un send_booking_link réussi.",
+    parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",
@@ -403,6 +415,11 @@ async function runTool(name, args, session) {
   if (name === "get_salon_info") {
     const info = { adresse: SALON_ADDRESS, heures: SALON_HOURS, prix: SALON_PRICE_LIST };
     return info[args.topic] ? { [args.topic]: info[args.topic] } : { error: "Sujet inconnu." };
+  }
+
+  if (name === "end_call") {
+    session.shouldHangup = true;
+    return { hanging_up: true };
   }
 
   if (name === "transfer_to_agent") {
@@ -546,6 +563,20 @@ wss.on("connection", (twilioWs) => {
           .catch(e => ({ error: e.message }));
 
         console.log(`[TOOL RESULT] ${tool.name}:`, JSON.stringify(result));
+
+        if (session?.shouldHangup) {
+          // Raccrocher via Twilio REST après 1.5s pour laisser l'audio finir
+          setTimeout(() => {
+            if (twilioClient && session.twilioCallSid) {
+              twilioClient.calls(session.twilioCallSid)
+                .update({ status: "completed" })
+                .then(() => console.log("[END] ✅ Appel raccroché"))
+                .catch(e => console.error("[END] Erreur raccrochage:", e.message));
+            }
+          }, 1500);
+          pendingTools.delete(ev.call_id);
+          break;
+        }
 
         if (session?.shouldTransfer) {
           setTimeout(() => {
