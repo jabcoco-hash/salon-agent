@@ -38,6 +38,8 @@ const {
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
   CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
+  GOOGLE_CLIENT_ID,
+  GOOGLE_CLIENT_SECRET,
 } = process.env;
 
 function envStr(key, fallback = "") {
@@ -122,40 +124,106 @@ async function getEventLocation(uri) {
   return Array.isArray(locs) && locs.length ? locs[0] : null;
 }
 
+// ─── Google OAuth token (sauvegardé en mémoire après /oauth/callback) ──────────
+let googleTokens = null; // { access_token, refresh_token, expiry_date }
+
+async function getGoogleAccessToken() {
+  if (!googleTokens) return null;
+  // Refresh si expiré
+  if (googleTokens.expiry_date && Date.now() > googleTokens.expiry_date - 60_000) {
+    try {
+      const r = await fetch("https://oauth2.googleapis.com/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id:     GOOGLE_CLIENT_ID,
+          client_secret: GOOGLE_CLIENT_SECRET,
+          refresh_token: googleTokens.refresh_token,
+          grant_type:    "refresh_token",
+        }),
+      });
+      const j = await r.json();
+      if (j.access_token) {
+        googleTokens.access_token  = j.access_token;
+        googleTokens.expiry_date   = Date.now() + (j.expires_in || 3600) * 1000;
+        console.log("[GOOGLE] Token rafraîchi");
+      }
+    } catch (e) { console.warn("[GOOGLE] Erreur refresh:", e.message); }
+  }
+  return googleTokens.access_token;
+}
+
 async function lookupClientByPhone(phone) {
-  // Chercher les rendez-vous passés de ce numéro dans Calendly
-  // On cherche via l'org URI dans les invitees
+  const token = await getGoogleAccessToken();
+  if (!token) { console.warn("[LOOKUP] Pas de token Google"); return null; }
+
   try {
-    // D'abord récupérer l'URI de l'organisation
-    const meR = await fetch("https://api.calendly.com/users/me", { headers: cHeaders() });
-    const me  = await meR.json();
-    const orgUri = me.resource?.current_organization;
-    if (!orgUri) return null;
+    // Chercher dans tous les contacts par numéro de téléphone
+    const r = await fetch(
+      `https://people.googleapis.com/v1/people:searchContacts` +
+      `?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const j = await r.json();
+    const results = j.results || [];
 
-    // Chercher les invitees avec ce numéro de téléphone
-    // Calendly n'a pas de recherche par téléphone directement —
-    // on cherche par email si on l'a, sinon on retourne null
-    // NOTE : Calendly stocke le téléphone dans les custom questions, pas en champ natif
-    // La meilleure approche : chercher dans les événements récents
-    const url = `https://api.calendly.com/scheduled_events?organization=${encodeURIComponent(orgUri)}&count=100&status=active`;
-    const r   = await fetch(url, { headers: cHeaders() });
-    const j   = await r.json();
-    const events = j.collection || [];
-
-    // Pour chaque événement, chercher si l'invitee correspond au numéro
-    for (const event of events.slice(0, 20)) { // limiter à 20 pour la vitesse
-      const invR = await fetch(`${event.uri}/invitees`, { headers: cHeaders() });
-      const invJ = await invR.json();
-      for (const inv of invJ.collection || []) {
-        if (inv.text_reminder_number && normalizePhone(inv.text_reminder_number) === phone) {
-          return { name: inv.name, email: inv.email, found: true };
-        }
+    for (const result of results) {
+      const person = result.person;
+      // Vérifier que le téléphone correspond exactement
+      const phones = person.phoneNumbers || [];
+      const match  = phones.find(p => normalizePhone(p.value || "") === phone);
+      if (match) {
+        const name  = person.names?.[0]?.displayName || null;
+        const email = person.emailAddresses?.[0]?.value || null;
+        console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email})`);
+        return { name, email, found: true };
       }
     }
+
+    // Essai avec format local (sans +1)
+    const local = phone.replace(/^\+1/, "");
+    const r2 = await fetch(
+      `https://people.googleapis.com/v1/people:searchContacts` +
+      `?query=${encodeURIComponent(local)}&readMask=names,emailAddresses,phoneNumbers`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const j2 = await r2.json();
+    for (const result of (j2.results || [])) {
+      const person = result.person;
+      const phones = person.phoneNumbers || [];
+      const match  = phones.find(p => normalizePhone(p.value || "") === phone);
+      if (match) {
+        const name  = person.names?.[0]?.displayName || null;
+        const email = person.emailAddresses?.[0]?.value || null;
+        console.log(`[LOOKUP] ✅ Trouvé (local): ${name} (${email})`);
+        return { name, email, found: true };
+      }
+    }
+
+    console.log(`[LOOKUP] Nouveau client: ${phone}`);
     return null;
   } catch (e) {
     console.warn("[LOOKUP] Erreur:", e.message);
     return null;
+  }
+}
+
+async function saveContactToGoogle({ name, email, phone }) {
+  const token = await getGoogleAccessToken();
+  if (!token) return;
+  try {
+    await fetch("https://people.googleapis.com/v1/people:createContact", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        names:          [{ displayName: name, givenName: name.split(" ")[0], familyName: name.split(" ").slice(1).join(" ") }],
+        emailAddresses: email ? [{ value: email }] : [],
+        phoneNumbers:   [{ value: phone, type: "mobile" }],
+      }),
+    });
+    console.log(`[GOOGLE] ✅ Contact créé: ${name}`);
+  } catch (e) {
+    console.warn("[GOOGLE] Erreur création contact:", e.message);
   }
 }
 
@@ -534,11 +602,68 @@ async function runTool(name, args, session) {
 }
 
 // ─── Routes HTTP ──────────────────────────────────────────────────────────────
-app.get("/", (req, res) => res.json({ ok: true }));
+app.get("/", (req, res) => res.json({ ok: true, google_connected: !!googleTokens }));
+
+// ─── OAuth Google ─────────────────────────────────────────────────────────────
+app.get("/oauth/start", (req, res) => {
+  if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
+    return res.status(500).send("GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET manquant dans Railway.");
+  }
+  const params = new URLSearchParams({
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  `${base()}/oauth/callback`,
+    response_type: "code",
+    scope:         "https://www.googleapis.com/auth/contacts",
+    access_type:   "offline",
+    prompt:        "consent",
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+
+app.get("/oauth/callback", async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.status(400).send(`Erreur OAuth: ${error}`);
+  if (!code)  return res.status(400).send("Code manquant");
+
+  try {
+    const r = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code,
+        client_id:     GOOGLE_CLIENT_ID,
+        client_secret: GOOGLE_CLIENT_SECRET,
+        redirect_uri:  `${base()}/oauth/callback`,
+        grant_type:    "authorization_code",
+      }),
+    });
+    const j = await r.json();
+    if (!j.access_token) throw new Error(JSON.stringify(j));
+
+    googleTokens = {
+      access_token:  j.access_token,
+      refresh_token: j.refresh_token,
+      expiry_date:   Date.now() + (j.expires_in || 3600) * 1000,
+    };
+    console.log("[GOOGLE] ✅ OAuth connecté — token reçu");
+    res.type("text/html").send(`
+      <h2>✅ Google Contacts connecté!</h2>
+      <p>Marie peut maintenant reconnaître tes clients existants.</p>
+      <p><strong>Important :</strong> Ce token est en mémoire — si Railway redémarre, visite à nouveau <a href="/oauth/start">/oauth/start</a>.</p>
+      <p><a href="/">← Retour</a></p>
+    `);
+  } catch (e) {
+    console.error("[GOOGLE] OAuth erreur:", e.message);
+    res.status(500).send(`Erreur: ${e.message}`);
+  }
+});
 
 app.get("/debug-env", (req, res) => res.json({
   SALON_NAME, SALON_CITY, SALON_ADDRESS, SALON_HOURS, SALON_PRICE_LIST,
-  TWILIO_CALLER_ID:   TWILIO_CALLER_ID   ? "✅" : "❌",
+  TWILIO_CALLER_ID:     TWILIO_CALLER_ID     ? "✅" : "❌",
+  GOOGLE_CLIENT_ID:     GOOGLE_CLIENT_ID     ? "✅" : "❌",
+  GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET ? "✅" : "❌",
+  GOOGLE_CONNECTED:     googleTokens         ? "✅ token actif" : "❌ visiter /oauth/start",
   OPENAI_API_KEY:     OPENAI_API_KEY     ? "✅" : "❌",
   CALENDLY_API_TOKEN: CALENDLY_API_TOKEN ? "✅" : "❌",
   URIs: {
@@ -788,6 +913,9 @@ app.post("/confirm-email/:token", async (req, res) => {
 
     const cancelUrl     = result?.resource?.cancel_url     || "";
     const rescheduleUrl = result?.resource?.reschedule_url || "";
+
+    // Sauvegarder dans Google Contacts si nouveau client
+    await saveContactToGoogle({ name, email, phone });
 
     await sendSms(phone,
       `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!\n\n` +
