@@ -128,9 +128,12 @@ async function getSlots(uri, startDate = null, endDate = null) {
       + `?event_type=${encodeURIComponent(uri)}`
       + `&start_time=${encodeURIComponent(cursor.toISOString())}`
       + `&end_time=${encodeURIComponent(chunkEnd.toISOString())}`;
+    console.log(`[SLOTS] Appel Calendly: start=${cursor.toISOString()} end=${chunkEnd.toISOString()}`);
     const r = await fetch(url, { headers: cHeaders() });
     if (!r.ok) throw new Error(`Calendly slots ${r.status}: ${await r.text()}`);
-    const slots = (await r.json()).collection?.map(x => x.start_time).filter(Boolean) || [];
+    const data = await r.json();
+    const slots = data.collection?.map(x => x.start_time).filter(Boolean) || [];
+    console.log(`[SLOTS] Calendly retourne ${slots.length} slots — premier: ${slots[0] || "aucun"}`);
     allSlots.push(...slots);
     cursor = chunkEnd;
     if (allSlots.length >= 20) break; // assez de résultats
@@ -159,8 +162,8 @@ else console.log("[GOOGLE] ⚠️ Pas de token — visite /oauth/start pour conn
 
 async function getGoogleAccessToken() {
   if (!googleTokens) return null;
-  // Refresh si expiré
-  if (googleTokens.expiry_date && Date.now() > googleTokens.expiry_date - 60_000) {
+  // Refresh si access_token null OU expiré
+  if (!googleTokens.access_token || (googleTokens.expiry_date && Date.now() > googleTokens.expiry_date - 60_000)) {
     try {
       const r = await fetch("https://oauth2.googleapis.com/token", {
         method: "POST",
@@ -517,15 +520,43 @@ async function runTool(name, args, session) {
     const uri = serviceUri(args.service);
     if (!uri) return { error: "Type de coupe non configuré dans Railway." };
     try {
-      let slots = await getSlots(uri);
-      if (!slots.length) return { disponible: false, message: "Aucune disponibilité cette semaine." };
+      // Calculer la fenêtre de dates
+      let startDate = null;
+      if (args.date_debut) {
+        startDate = new Date(args.date_debut);
+        if (isNaN(startDate.getTime())) startDate = null;
+      }
+      if (args.offset_semaines) {
+        const base = startDate || new Date();
+        startDate = new Date(base.getTime() + args.offset_semaines * 7 * 24 * 3600 * 1000);
+      }
+      const endDate = startDate ? new Date(startDate.getTime() + 7 * 24 * 3600 * 1000) : null;
+
+      let slots = await getSlots(uri, startDate, endDate);
+
+      // Filtrer STRICTEMENT dans la plage demandée
+      if (startDate) {
+        const end = endDate || new Date(startDate.getTime() + 7 * 24 * 3600 * 1000);
+        slots = slots.filter(iso => {
+          const d = new Date(iso);
+          return d >= startDate && d <= end;
+        });
+        if (!slots.length) {
+          return {
+            disponible: false,
+            message: `Aucun créneau pour la période demandée (${startDate.toLocaleDateString("fr-CA", { timeZone: CALENDLY_TIMEZONE })}). La fenêtre de réservation Calendly ne couvre probablement pas cette date — augmente "Max scheduling notice" dans Calendly. Dis au client et propose une date plus proche ou transfère.`,
+          };
+        }
+      } else if (!slots.length) {
+        return { disponible: false, message: "Aucune disponibilité cette semaine." };
+      }
 
       // Filtre par jour
       const JOURS = { lundi:1, mardi:2, mercredi:3, jeudi:4, vendredi:5, samedi:6, dimanche:0 };
       if (args.jour) {
-        const jourKey = args.jour.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        const jourKey = args.jour.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
         const jourNum = Object.entries(JOURS).find(([k]) =>
-          k.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === jourKey
+          k.normalize("NFD").replace(/[̀-ͯ]/g, "") === jourKey
         )?.[1];
         if (jourNum !== undefined) {
           const filtered = slots.filter(iso => {
@@ -533,7 +564,7 @@ async function runTool(name, args, session) {
             return d.getDay() === jourNum;
           });
           if (filtered.length) slots = filtered;
-          else return { disponible: false, message: `Pas de disponibilité ${args.jour} cette semaine.` };
+          else return { disponible: false, message: `Pas de disponibilité ${args.jour} pour cette période.` };
         }
       }
 
@@ -549,11 +580,24 @@ async function runTool(name, args, session) {
         if (filtered.length) slots = filtered;
       }
 
+      // Dédupliquer par label
+      const seen = new Set();
+      const unique = slots.filter(iso => {
+        const label = slotToFrench(iso);
+        if (seen.has(label)) return false;
+        seen.add(label);
+        return true;
+      });
+
+      console.log(`[SLOTS] ✅ ${unique.length} créneaux — début: ${startDate?.toLocaleDateString("fr-CA") || "aujourd'hui"}`);
       return {
         disponible: true,
-        slots: slots.slice(0, 4).map(iso => ({ iso, label: slotToFrench(iso) })),
+        periode: startDate ? startDate.toLocaleDateString("fr-CA") : "cette semaine",
+        slots: unique.slice(0, 4).map(iso => ({ iso, label: slotToFrench(iso) })),
+        note: "Lis chaque label UNE SEULE FOIS. Pour plus d'options: offset_semaines+1.",
       };
     } catch (e) {
+      console.error("[SLOTS]", e.message);
       return { error: "Impossible de vérifier les disponibilités." };
     }
   }
