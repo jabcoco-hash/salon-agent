@@ -357,7 +357,13 @@ FLUX RENDEZ-VOUS :
    → RÈGLE : connaître le type AVANT d'appeler get_available_slots
 
 2. DISPONIBILITÉS
-   → Dis "Patiente un instant!" puis appelle get_available_slots (avec jour/periode/date_debut si mentionnés)
+   → DATES RELATIVES — si le client mentionne une date relative, calcule-la et CONFIRME avant de chercher :
+     "vendredi prochain" → calcule la date → dis : "Ok, donc vendredi le [date ex: 27 février] — c'est bien ça?"
+     "dans 2 semaines" → calcule → confirme la date
+     "en mars" → confirme : "Tu veux un rendez-vous en mars, c'est ça?"
+     → Attends OUI avant d'appeler get_available_slots
+   → Date confirmée (ou pas de date relative) → dis "Patiente un instant!" puis appelle get_available_slots
+   → PARAMÈTRES : jour = UN SEUL MOT ("vendredi"), date_debut = date ISO calculée (ex: "2026-02-27")
    → Propose les créneaux : "J'ai [options] — lequel te convient le mieux?"
    → Client veut d'autres options → rappelle avec offset_semaines+1, MAX 2 tentatives
    → Après 2 échecs → "Désolée, je te transfère à l'équipe!" → transfer_to_agent
@@ -398,7 +404,7 @@ FLUX RENDEZ-VOUS :
      Avant midi → "Voilà, c'est fait! Tu devrais avoir reçu la confirmation. Je te souhaite une belle matinée!"
      Midi-17h   → "Voilà, c'est fait! Tu devrais avoir reçu la confirmation. Je te souhaite une belle fin de journée!"
      Après 17h  → "Voilà, c'est fait! Tu devrais avoir reçu la confirmation. Je te souhaite une belle soirée!"
-   → Appelle end_call immédiatement après — rien de plus
+   → Appelle end_call immédiatement après — OBLIGATOIRE, sans rien dire de plus
 
 RÈGLES STRICTES :
 - Ne pose JAMAIS une question dont tu as déjà la réponse
@@ -419,15 +425,15 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux disponibles. Utilise date_debut pour chercher à partir d'une date future (ex: 'mars', 'la semaine prochaine', 'dans 2 semaines'). Utilise offset pour voir plus de créneaux si le client veut d'autres options.",
+    description: "Récupère les créneaux disponibles. IMPORTANT: convertis TOUJOURS les références temporelles en date ISO avant d'appeler. 'vendredi prochain' = calcule la date ISO du prochain vendredi. 'la semaine prochaine' = date_debut du lundi prochain. 'en mars' = date_debut='2026-03-01'. 'dans 2 semaines' = offset_semaines:2.",
     parameters: {
       type: "object",
       properties: {
         service:    { type: "string", enum: ["homme", "femme", "nonbinaire"] },
-        jour:       { type: "string", description: "Jour souhaité ex: 'lundi', 'mercredi'. Omets si non mentionné." },
+        jour:       { type: "string", description: "Jour de la semaine UNIQUEMENT en un mot: 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'. Ne jamais mettre 'prochain' ou autre qualificatif." },
         periode:    { type: "string", enum: ["matin", "après-midi", "soir"], description: "Période souhaitée. Omets si non mentionnée." },
-        date_debut: { type: "string", description: "Date ISO (YYYY-MM-DD) ou description ex: '2026-03-01' pour chercher à partir de mars. Omets pour chercher à partir d'aujourd'hui." },
-        offset_semaines: { type: "number", description: "Décaler la recherche de N semaines. Ex: 1 = semaine prochaine, 2 = dans 2 semaines. Utilise quand le client veut d'autres options que celles déjà proposées." },
+        date_debut: { type: "string", description: "Date ISO YYYY-MM-DD. Calcule la vraie date: 'vendredi prochain' → calcule et mets la date ISO du prochain vendredi. 'la semaine prochaine' → date du lundi prochain. 'en mars' → '2026-03-01'. Omets pour chercher à partir d'aujourd'hui." },
+        offset_semaines: { type: "number", description: "Utilise SEULEMENT quand le client veut d'autres options que celles déjà proposées. Ex: 1 = décaler d'une semaine supplémentaire." },
       },
       required: ["service"],
     },
@@ -1023,7 +1029,7 @@ wss.on("connection", (twilioWs) => {
                 .then(() => console.log("[END] ✅ Appel raccroché"))
                 .catch(e => console.error("[END] Erreur raccrochage:", e.message));
             }
-          }, 5000); // 5s pour laisser la phrase complète se terminer
+          }, 6000); // 6s pour laisser la phrase complète se terminer
           pendingTools.delete(ev.call_id);
           break;
         }
