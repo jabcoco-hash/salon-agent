@@ -129,7 +129,7 @@ const cHeaders = () => ({
 });
 
 async function getSlots(uri, startDate = null, endDate = null) {
-  const start = startDate ? new Date(startDate) : new Date(Date.now() + 5 * 60 * 1000);
+  const start = startDate ? new Date(startDate) : new Date(Date.now() + 1 * 60 * 1000); // +1min seulement
   const end   = endDate   ? new Date(endDate)   : new Date(start.getTime() + 7 * 24 * 3600 * 1000);
 
   // Calendly limite à 7 jours par requête — si la fenêtre est plus grande, paginer
@@ -387,7 +387,7 @@ FLUX RENDEZ-VOUS :
    → Si déjà connu (dossier trouvé et confirmé) → SAUTE cette étape
    → Sinon → "C'est à quel nom?" → enchaîne immédiatement vers étape 6 sans pause
 
-5. NUMÉRO ET COURRIEL
+6. NUMÉRO ET COURRIEL
    → Appelle format_caller_number
    → Dis : "Je t'envoie la confirmation par texto au [spoken_groups]... C'est bien ton cellulaire? Si c'est pas un cell, dis Agent."
    → Attends OUI/NON
@@ -395,14 +395,14 @@ FLUX RENDEZ-VOUS :
 
    CLIENT EXISTANT avec email :
    → Épelle l'email lettre par lettre avec spelled_email : "J'ai ton courriel [spelled_email] — c'est toujours bon?"
-   → OUI → dis "Excellent! Donne-moi un instant, je t'envoie la confirmation par courriel égallement!" → appelle send_booking_link avec email
+   → OUI → dis "Excellent! Donne-moi un instant, je t'envoie la confirmation par texto!" → appelle send_booking_link avec email
    → NON → demande nouveau courriel → update_contact → send_booking_link
 
    NOUVEAU CLIENT :
-   → Dis "Excellent! Donne-moi un instant, je t'envoie un lien par texto pour finaliser la réservation!"
+   → Dis "Donne-moi un instant, je t'envoie un lien par texto pour finaliser la réservation!"
    → Appelle send_booking_link sans email (lien SMS pour saisir le courriel)
 
-6. APRÈS ENVOI SMS (seulement si un RDV a été complété)
+7. APRÈS ENVOI SMS (seulement si un RDV a été complété)
    → "Est-ce que je peux faire autre chose pour toi?"
    → OUI → continue | NON → appelle get_current_time → dis EXACTEMENT selon l'heure :
      Avant midi → "Voilà, c'est fait! Tu devrais avoir reçu la confirmation. Je te souhaite une belle matinée!"
@@ -414,14 +414,14 @@ FIN D'APPEL SANS RDV (client pose une question et repart sans réserver) :
    → Si le client dit "merci", "bonne journée", "au revoir", "c'est tout" SANS avoir réservé :
      → NE MENTIONNE PAS de confirmation ou de texto — aucun RDV n'a été pris
      → Appelle get_current_time → dis selon l'heure :
-       Avant midi → "Avec plaisir! Je vous souhaite une belle matinée! Au revoir!"
-       Midi-17h   → "Avec plaisir! Je vous souhaite une belle fin de journée! Au revoir!"
-       Après 17h  → "Avec plaisir! Je vous souhaite une belle fin de soirée! Au revoir!"
+       Avant midi → "Avec plaisir! Je te souhaite une belle matinée!"
+       Midi-17h   → "Avec plaisir! Je te souhaite une belle fin de journée!"
+       Après 17h  → "Avec plaisir! Je te souhaite une belle belle soirée!"
      → Appelle end_call immédiatement
 
 RÈGLES STRICTES :
 - Prix, adresse, heures d'ouverture → réponds IMMÉDIATEMENT depuis le prompt sans appeler aucun outil
-- Ne répond qu'à une seul question à la fois Prix, addresse ou heure d'ouverture ne les enchènes pas un après l'autre sans que ce soit demandé.
+- Ne réponds qu'à UNE seule question à la fois — prix, adresse ou heures ne s'enchaînent pas sans que ce soit demandé
 - Ne pose JAMAIS une question dont tu as déjà la réponse
 - N'invente JAMAIS une réponse — si mal entendu : "Désolée, tu peux répéter?"
 - Ne demande JAMAIS l'email — le lien SMS s'en occupe (sauf client existant)
@@ -543,6 +543,25 @@ const TOOLS = [
 async function runTool(name, args, session) {
   console.log(`[TOOL] ${name}`, JSON.stringify(args));
 
+  // Si le tool prend plus de 5s, envoyer un message vocal de patience
+  const keepaliveMsg = ["get_available_slots", "lookup_existing_client", "send_booking_link", "update_contact"].includes(name);
+  let keepaliveTimer = null;
+  if (keepaliveMsg && session?.oaiWs?.readyState === 1) {
+    keepaliveTimer = setTimeout(() => {
+      try {
+        session.oaiWs.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "message", role: "user",
+            content: [{ type: "input_text", text: "[système: dis 'Patiente un instant...' à voix haute maintenant]" }]
+          }
+        }));
+        session.oaiWs.send(JSON.stringify({ type: "response.create" }));
+      } catch(e) { /* ignore */ }
+    }, 5000);
+  }
+  const clearKeepalive = () => { if (keepaliveTimer) clearTimeout(keepaliveTimer); };
+
   if (name === "get_available_slots") {
     const uri = serviceUri(args.service);
     if (!uri) return { error: "Type de coupe non configuré dans Railway." };
@@ -639,7 +658,7 @@ async function runTool(name, args, session) {
 
   if (name === "lookup_existing_client") {
     const phone = session?.callerNumber;
-    if (!phone) return { found: false, message: "Pas de numéro appelant disponible." };
+    if (!phone) { clearKeepalive(); return { found: false, message: "Pas de numéro appelant disponible." }; }
     console.log(`[LOOKUP] Recherche client pour ${phone}`);
     const client = await lookupClientByPhone(phone);
     if (client) {
@@ -800,7 +819,18 @@ ${link}`
   }
 
   if (name === "end_call") {
+    const elapsed = Date.now() - (session?.callStartTime || Date.now());
+    if (elapsed < 15000) {
+      console.warn(`[HANGUP] ⚠️ Ignoré — trop tôt (${Math.round(elapsed/1000)}s). Continue la conversation.`);
+      return { error: "Trop tôt pour raccrocher — continue la conversation normalement." };
+    }
+    console.log(`[HANGUP] Raccrochage dans 6s (durée appel: ${Math.round(elapsed/1000)}s)`);
     session.shouldHangup = true;
+    setTimeout(() => {
+      twilioClient?.calls(session.twilioCallSid)
+        ?.update({ status: "completed" })
+        ?.catch(e => console.error("[HANGUP]", e.message));
+    }, 6000);
     return { hanging_up: true };
   }
 
@@ -1183,6 +1213,7 @@ wss.on("connection", (twilioWs) => {
             openaiWs:       null,
             streamSid,
             shouldTransfer: false,
+            callStartTime:  Date.now(),
           };
           sessions.set(sid, session);
         }
