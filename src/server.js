@@ -257,10 +257,38 @@ async function lookupClientByPhone(phone) {
 async function saveContactToGoogle({ name, email, phone }) {
   const token = await getGoogleAccessToken();
   if (!token) {
-    console.warn("[GOOGLE] ❌ saveContact — pas de token Google. Visite /oauth/start pour connecter.");
+    console.warn("[GOOGLE] ❌ saveContact — pas de token. Visite /oauth/start.");
     return;
   }
   try {
+    // Anti-doublon : chercher si ce numéro existe déjà
+    const searchR = await fetch(
+      `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const searchJ = await searchR.json();
+    const existingPerson = searchJ.results?.find(r =>
+      (r.person?.phoneNumbers || []).some(p => samePhone(p.value, phone))
+    )?.person;
+
+    if (existingPerson) {
+      const resourceName = existingPerson.resourceName;
+      const existingEmail = existingPerson.emailAddresses?.[0]?.value;
+      if (email && email !== existingEmail) {
+        // Mettre à jour l'email seulement
+        await fetch(`https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=emailAddresses`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ emailAddresses: [{ value: email }] }),
+        });
+        console.log(`[GOOGLE] ✅ Email mis à jour: ${existingPerson.names?.[0]?.displayName} → ${email}`);
+      } else {
+        console.log(`[GOOGLE] Contact déjà à jour — pas de doublon: ${existingPerson.names?.[0]?.displayName}`);
+      }
+      return;
+    }
+
+    // Nouveau contact
     const r = await fetch("https://people.googleapis.com/v1/people:createContact", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -272,16 +300,13 @@ async function saveContactToGoogle({ name, email, phone }) {
     });
     const j = await r.json();
     if (!r.ok) {
-      console.error(`[GOOGLE] ❌ Erreur création contact: ${r.status}`, JSON.stringify(j));
-      // Si erreur 403 = scope insuffisant
-      if (r.status === 403) {
-        console.error("[GOOGLE] ❌ Scope insuffisant — revisite /oauth/start (scope contacts requis, pas contacts.readonly)");
-      }
+      console.error(`[GOOGLE] ❌ Erreur création: ${r.status}`, JSON.stringify(j));
+      if (r.status === 403) console.error("[GOOGLE] ❌ Scope insuffisant — revisite /oauth/start");
       return;
     }
-    console.log(`[GOOGLE] ✅ Contact créé: ${name} (${email}) — ${phone}`);
+    console.log(`[GOOGLE] ✅ Nouveau contact créé: ${name} (${email}) — ${phone}`);
   } catch (e) {
-    console.error("[GOOGLE] ❌ Erreur création contact:", e.message);
+    console.error("[GOOGLE] ❌ Erreur saveContact:", e.message);
   }
 }
 
@@ -379,7 +404,10 @@ RÈGLES STRICTES :
 - Ne propose JAMAIS liste d'attente ni rappel
 - transfer_to_agent SEULEMENT si client dit explicitement "agent", "humain", "parler à quelqu'un"
 - Un prénom N'EST PAS une demande de transfert
-- end_call JAMAIS avant la salutation complète`;
+- end_call JAMAIS avant la salutation complète
+- INTERDIT ABSOLU : inventer ou deviner un nom — utilise UNIQUEMENT le nom du dossier Google OU celui dit explicitement par le client dans CET appel
+- INTERDIT ABSOLU : réutiliser un nom d'un appel précédent — chaque appel repart à zéro
+- Pour send_booking_link : le champ "name" doit être le nom confirmé dans CET appel uniquement`;
 }
 
 
