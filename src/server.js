@@ -88,6 +88,19 @@ function fmtPhone(e164 = "") {
   return d.length === 10 ? `(${d.slice(0,3)}) ${d.slice(3,6)}-${d.slice(6)}` : e164;
 }
 
+// Épeler un email lettre par lettre pour la lecture vocale
+// ex: "jab@hotmail.com" → "j-a-b arobase h-o-t-m-a-i-l point com"
+function spellEmail(email = "") {
+  const SPECIAL = {
+    "@": "arobase",
+    ".": "point",
+    "_": "tiret bas",
+    "-": "tiret",
+    "+": "plus",
+  };
+  return email.toLowerCase().split("").map(c => SPECIAL[c] || c).join("-").replace(/-arobase-/g, " arobase ").replace(/-point-/g, " point ").replace(/--/g, "-");
+}
+
 function slotToFrench(iso) {
   try {
     return new Date(iso).toLocaleString("fr-CA", {
@@ -325,19 +338,17 @@ NUMÉRO APPELANT : ${callerNumber || "inconnu"} ${callerDisplay ? `(${callerDisp
 FLUX RENDEZ-VOUS — étape par étape
 ═══════════════════════════════════
 
-ÉTAPE 0 — Reconnaissance client (en arrière-plan, silencieux)
-  → Fais ton intro normale : "Bonjour! Moi c'est Marie..."
-  → NE mentionne PAS que tu cherches un dossier — fais-le discrètement
-  → Quand le client demande un rendez-vous, appelle lookup_existing_client
-    en même temps que get_available_slots (les deux ensemble)
-  → NE DIS PAS "je vérifie ton dossier" — enchaîne naturellement :
-    "Ok laisse-moi vérifier les disponibilités!"
-    (la recherche de dossier se fait en coulisse pendant ce temps)
-  → Quand tu as les résultats :
-    - CLIENT TROUVÉ avec email → salue par prénom : "Hey [prénom], content de te revoir!"
-      puis plus tard confirme : "J'ai ton courriel [email] — c'est toujours bon?"
-    - CLIENT TROUVÉ sans email → salue par prénom, continue normalement
-    - NOUVEAU CLIENT → flux normal, pas de mention de dossier
+ÉTAPE 0 — Reconnaissance client
+  → Fais ton intro normale et attends que le client parle
+  → Quand le client demande un rendez-vous, dis :
+    "Laisse-moi vérifier si j'ai un dossier qui concorde avec ton numéro!"
+  → Appelle lookup_existing_client
+  → Si CLIENT TROUVÉ :
+    → Dis : "J'ai un dossier au nom de [prénom nom] — c'est bien toi?"
+    → Attends confirmation OUI/NON
+    → Si OUI → continue avec les infos connues (saute la question du nom plus tard)
+    → Si NON → traite comme nouveau client
+  → Si NOUVEAU CLIENT → continue normalement sans mention de dossier
 
 ÉTAPE 1 — Comprendre la demande
   → Écoute la phrase COMPLÈTE avant de répondre
@@ -375,16 +386,20 @@ FLUX RENDEZ-VOUS — étape par étape
 
   B) Confirmer le numéro de cellulaire :
      ${callerNumber ? `→ Appelle format_caller_number
-     → Dis : "La confirmation va être envoyée par texto sur ton cellulaire au [numéro]... C'est bien ton cell?"
-     → Avise : "Note que la confirmation est envoyée par texto — ton appareil doit être un cellulaire. Si c'est pas le cas, dis-moi Agent pour parler à quelqu'un."
-     → Si NON → demande le bon numéro vocalement puis normalize_and_confirm_phone` : 
+     → Appelle format_caller_number pour obtenir spoken_groups
+     → Dis EXACTEMENT : "Je vais t'envoyer la confirmation par texto au [spoken_groups]... C'est bien ton cellulaire? Si c'est pas un cell, dis Agent pour parler à quelqu'un de l'équipe."
+     → Attends confirmation OUI/NON ou "Agent"
+     → Si OUI → continue
+     → Si NON → demande le bon numéro, appelle normalize_and_confirm_phone, répète lettre par lettre` : 
      `→ Demande : "La confirmation est envoyée par texto sur ton cell — quel est ton numéro de cellulaire?"
      → Appelle normalize_and_confirm_phone, répète le numéro et confirme`}
 
   C) SI CLIENT EXISTANT avec email connu :
-     → Confirme : "J'ai aussi ton courriel [email] dans notre dossier — c'est toujours le bon?"
+     → Épelle le courriel LETTRE PAR LETTRE en utilisant spelled_email du résultat lookup
+     → Dis : "J'ai aussi ton courriel [spelled_email] dans notre dossier — c'est toujours le bon?"
+     → Exemple : "j-a-b-c-o-c-o arobase hotmail point com"
      → Si OUI → utilise cet email, appelle send_booking_link avec email inclus
-     → Si NON → demande le nouveau courriel, mets à jour avec saveContactToGoogle
+     → Si NON → demande le nouveau courriel lettre par lettre pour confirmer, appelle update_contact pour sauvegarder
 
   D) SI NOUVEAU CLIENT (pas d'email connu) :
      → Dis : "Tu vas recevoir un lien par texto pour entrer ton courriel et finaliser la réservation."
@@ -412,14 +427,12 @@ COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
     (NOTE : ne commence PAS cette phrase par "Parfait" — ce mot est BANNI)
   → ATTENDS la réponse du client — NE raccroche PAS avant
   → Si le client dit NON (ou "non merci", "c'est tout", "ça va", "c'est beau", "non c'est bon") :
-      Choisis UNE exclamation parmi : "Excellent!", "D'accord!", "C'est beau!", "Génial!", "Super!", "Très bien!", "Avec plaisir!"
-      Puis DIS OBLIGATOIREMENT selon l'heure de l'appel :
-      → Appelle get_current_time pour connaître l'heure locale exacte avant de choisir
-      → Avant midi  → "[exclamation]! Alors je te souhaite une belle matinée! À bientôt au ${SALON_NAME}!"
-      → Midi à 17h  → "[exclamation]! Alors je te souhaite un bel après-midi! À bientôt au ${SALON_NAME}!"
-      → Après 17h   → "[exclamation]! Alors je te souhaite une belle soirée! À bientôt au ${SALON_NAME}!"
-      → Cette phrase de salutation EST OBLIGATOIRE — ne saute pas cette étape
-      → Appelle end_call SEULEMENT après avoir prononcé la salutation complète
+      → Appelle get_current_time pour connaître l'heure
+      → Dis SIMPLEMENT (rien d'autre) :
+        Avant midi  → "Pas de problème! Je te souhaite une belle matinée!"
+        Midi à 17h  → "Pas de problème! Je te souhaite une belle fin de journée!"
+        Après 17h   → "Pas de problème! Je te souhaite une belle soirée!"
+      → Appelle end_call immédiatement après — rien d'autre, pas de "À bientôt", pas d'exclamation supplémentaire
   → Si le client a une autre question → réponds normalement et continue
   → end_call NE doit JAMAIS être appelé avant d'avoir dit la salutation
 
@@ -642,9 +655,10 @@ async function runTool(name, args, session) {
         name:   client.name,
         email:  client.email || null,
         has_email: !!client.email,
+        spelled_email: client.email ? spellEmail(client.email) : null,
         message: client.email
-          ? `Client existant : ${client.name}, courriel : ${client.email}. Salue-le par son prénom, dis que tu as déjà son dossier, et confirme le courriel : "J'ai déjà ton courriel ${client.email} dans notre système — c'est toujours bon?"`
-          : `Client existant : ${client.name}, mais pas de courriel dans le dossier. Salue-le par son prénom et demande son courriel.`,
+          ? `Client existant : ${client.name}, courriel : ${client.email} (à épeler : ${spellEmail(client.email)}). Salue-le par son prénom et confirme le courriel EN L'ÉPELANT : "J'ai ton courriel ${spellEmail(client.email)} dans notre dossier — c'est toujours bon?"`
+          : `Client existant : ${client.name}, pas de courriel. Salue-le par son prénom et demande son courriel.`,
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
