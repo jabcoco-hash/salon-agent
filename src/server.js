@@ -358,28 +358,42 @@ FLUX RENDEZ-VOUS — étape par étape
   → Ne boucle JAMAIS plus de 2 fois sur get_available_slots pour la même demande
 
 ÉTAPE 3 — Confirmation créneau
-  → Confirme : "Parfait, je te prends [jour] à [heure]!"
+  → Confirme le créneau choisi : "Super, je te prends [jour] à [heure]!"
   → Attends confirmation du client
 
 ÉTAPE 4 — Nom
-  → Demande : "C'est à quel nom?"
-  → Dès que le client donne son nom, ENCHAÎNE IMMÉDIATEMENT sans pause :
-    "Parfait [prénom]! [phrase de l'étape 5 directement]"
-  → Ne demande PAS de confirmation du nom, ne fais PAS de pause, ne dis PAS "parfait" et arrête
-  → Combine la confirmation du nom ET la question du numéro en UNE SEULE phrase fluide
+  → Si le nom est DÉJÀ CONNU (client existant trouvé à l'étape 0) → SAUTE cette étape, passe à l'étape 5
+  → Si le nom est inconnu → demande : "C'est à quel nom?"
+  → Dès que le client répond, ENCHAÎNE IMMÉDIATEMENT vers l'étape 5 sans pause
+  → Ne redemande JAMAIS le nom si tu l'as déjà
 
-ÉTAPE 5 — Confirmation numéro et courriel
-  ${callerNumber ? `→ Appelle format_caller_number pour obtenir la version lisible du numéro
-  → Dis : "Je t'envoie la confirmation au [numéro formaté]... C'est bien ça?"
-  → Si OUI → utilise ce numéro
-  → Si NON → demande le numéro vocalement` : `→ Pas de numéro appelant → demande vocalement`}
-  
-  SI CLIENT EXISTANT AVEC EMAIL CONFIRMÉ à l'étape 0 :
-  → Tu as déjà le courriel — appelle directement send_booking_link avec l'email connu
-  → Dis : "Je t'envoie un lien de confirmation par texto et par courriel!"
-  
-  SI NOUVEAU CLIENT ou email non confirmé :
-  → send_booking_link envoie un SMS avec un lien pour saisir le courriel
+ÉTAPE 5 — Confirmation numéro, courriel et envoi
+
+  A) Confirmer le créneau complet :
+     → "Ok [prénom], je te confirme : [service] le [jour] à [heure] — c'est bien ça?"
+     → Attends OUI
+
+  B) Confirmer le numéro de cellulaire :
+     ${callerNumber ? `→ Appelle format_caller_number
+     → Dis : "La confirmation va être envoyée par texto sur ton cellulaire au [numéro]... C'est bien ton cell?"
+     → Avise : "Note que la confirmation est envoyée par texto — ton appareil doit être un cellulaire. Si c'est pas le cas, dis-moi Agent pour parler à quelqu'un."
+     → Si NON → demande le bon numéro vocalement puis normalize_and_confirm_phone` : 
+     `→ Demande : "La confirmation est envoyée par texto sur ton cell — quel est ton numéro de cellulaire?"
+     → Appelle normalize_and_confirm_phone, répète le numéro et confirme`}
+
+  C) SI CLIENT EXISTANT avec email connu :
+     → Confirme : "J'ai aussi ton courriel [email] dans notre dossier — c'est toujours le bon?"
+     → Si OUI → utilise cet email, appelle send_booking_link avec email inclus
+     → Si NON → demande le nouveau courriel, mets à jour avec saveContactToGoogle
+
+  D) SI NOUVEAU CLIENT (pas d'email connu) :
+     → Dis : "Tu vas recevoir un lien par texto pour entrer ton courriel et finaliser la réservation."
+     → Appelle send_booking_link sans email — le lien SMS s'en occupe
+
+  APRÈS send_booking_link réussi :
+  → Si email fourni directement (client existant) : "Tout est confirmé! Tu vas recevoir un texto de confirmation."
+  → Si lien SMS envoyé : "Tu vas recevoir un lien par texto pour saisir ton courriel et confirmer ton rendez-vous."
+  → Dans les deux cas → demande si autre chose → puis end_call
 
 COLLECTE VOCALE DU NUMÉRO (si le client refuse ou si numéro inconnu) :
   → Dis : "Ok, dis-moi ton numéro de cellulaire."
@@ -490,6 +504,20 @@ const TOOLS = [
         topic: { type: "string", enum: ["adresse", "heures", "prix"] },
       },
       required: ["topic"],
+    },
+  },
+  {
+    type: "function",
+    name: "update_contact",
+    description: "Met à jour ou crée un contact dans Google Contacts. Appelle quand le client corrige son courriel ou donne un nouveau numéro.",
+    parameters: {
+      type: "object",
+      properties: {
+        name:  { type: "string", description: "Nom complet du client" },
+        email: { type: "string", description: "Nouveau courriel confirmé" },
+        phone: { type: "string", description: "Numéro de téléphone" },
+      },
+      required: ["name", "phone"],
     },
   },
   {
@@ -742,6 +770,16 @@ ${link}`
   if (name === "get_salon_info") {
     const info = { adresse: SALON_ADDRESS, heures: SALON_HOURS, prix: SALON_PRICE_LIST };
     return info[args.topic] ? { [args.topic]: info[args.topic] } : { error: "Sujet inconnu." };
+  }
+
+  if (name === "update_contact") {
+    const phone = normalizePhone(args.phone) || args.phone;
+    const name  = args.name?.trim();
+    const email = args.email?.trim().toLowerCase() || null;
+    if (!name || !phone) return { error: "Nom et téléphone requis." };
+    await saveContactToGoogle({ name, email, phone });
+    console.log(`[CONTACT] ✅ Mis à jour: ${name} (${email}) — ${phone}`);
+    return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
 
   if (name === "get_current_time") {
