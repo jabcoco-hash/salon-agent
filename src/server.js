@@ -831,6 +831,43 @@ ${link}`
 app.get("/", (req, res) => res.json({ ok: true, google_connected: !!googleTokens }));
 
 // ─── OAuth Google ─────────────────────────────────────────────────────────────
+// ─── Route info Calendly ──────────────────────────────────────────────────────
+app.get("/calendly-info", async (req, res) => {
+  try {
+    const meR = await fetch("https://api.calendly.com/users/me", {
+      headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` }
+    });
+    const me = await meR.json();
+    const orgUri = me.resource?.current_organization;
+
+    const membersR = await fetch(`https://api.calendly.com/organization_memberships?organization=${encodeURIComponent(orgUri)}&count=100`, {
+      headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` }
+    });
+    const members = await membersR.json();
+
+    const etR = await fetch(`https://api.calendly.com/event_types?organization=${encodeURIComponent(orgUri)}&count=100`, {
+      headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` }
+    });
+    const et = await etR.json();
+
+    res.type("text/html").send(`
+      <h2>Calendly Info</h2>
+      <h3>Organization URI</h3>
+      <pre style="background:#f0f0f0;padding:10px">${orgUri}</pre>
+      <h3>Membres (${members.collection?.length || 0})</h3>
+      <pre style="background:#f0f0f0;padding:10px">${(members.collection || []).map(m =>
+        "Nom   : " + m.user?.name + "\nEmail : " + m.user?.email + "\nURI   : " + m.user?.uri
+      ).join("\n\n")}</pre>
+      <h3>Event Types (${et.collection?.length || 0})</h3>
+      <pre style="background:#f0f0f0;padding:10px">${(et.collection || []).map(e =>
+        "Nom   : " + e.name + "\nURI   : " + e.uri + "\nOwner : " + e.profile?.name
+      ).join("\n\n")}</pre>
+    `);
+  } catch(e) {
+    res.status(500).send("Erreur: " + e.message);
+  }
+});
+
 app.get("/oauth/start", (req, res) => {
   if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET) {
     return res.status(500).send("GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET manquant dans Railway.");
