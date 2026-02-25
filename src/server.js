@@ -460,12 +460,15 @@ PRISE DE RENDEZ-VOUS — dans cet ordre, UNE étape à la fois :
 2. DISPONIBILITÉS :
    → Si date relative ("vendredi prochain") → confirme la date calculée avant de chercher.
    → Appelle get_available_slots (avec coiffeuse si demandée).
-   → Présente les créneaux avec les coiffeuses dispo : "J'ai mardi à 9h avec Ariane, et mercredi à 14h avec Laurie ou Ariane."
-   → Si coiffeuse demandée pas dispo dans un créneau → propose une autre : "Ariane n'est pas dispo ce mardi, mais Laurie l'est — ça te convient?"
+   → Présente les créneaux : "J'ai mardi à 9h et mercredi à 14h — tu as une préférence?"
+   → Si une seule option : "J'ai seulement le mardi à 9h — ça te convient?"
+   → Si coiffeuse demandée pas dispo → "Ariane n'est pas dispo ce mardi, mais Laurie l'est — ça te convient?"
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 3. CONFIRMATION créneau :
-   → "Coupe [homme/femme] le [jour] à [heure], c'est ça?" → attends OUI.
+   → Regroupe TOUT en une seule confirmation : "Coupe [homme/femme] le [jour complet ex: vendredi le 27 février] à [heure] avec [coiffeuse si mentionnée] — c'est bien ça?"
+   → Si le client a déjà donné le type + jour + heure dans la même phrase → confirme TOUT immédiatement, ne pose pas de questions intermédiaires
+   → Attends OUI avant de continuer.
 
 4. DOSSIER :
    → Appelle lookup_existing_client.
@@ -688,7 +691,7 @@ async function runTool(name, args, session) {
         return {
           disponible: sel.length > 0,
           slots: sel.map(iso => ({ iso, label: slotToFrench(iso), coiffeuses_dispo: [] })),
-          note: "Présente les créneaux. La coiffeuse sera assignée automatiquement par Calendly selon les disponibilités.",
+          note: "Présente les créneaux et termine par 'Tu as une préférence?' ou 'Lequel te convient le mieux?' — JAMAIS 'Ça convient?' quand il y a plusieurs options.",
         };
       }
 
@@ -784,7 +787,7 @@ async function runTool(name, args, session) {
           label: slotToFrench(iso),
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
         })),
-        note: "Présente les créneaux avec les coiffeuses disponibles. Ex: 'Mardi à 9h avec Ariane ou Laurie'. Si coiffeuse spécifique demandée et pas dispo dans ce créneau, mentionne-le et propose une autre.",
+        note: "Présente les créneaux disponibles et termine par 'Tu as une préférence?' ou 'Lequel te convient le mieux?' — JAMAIS 'Ça convient?' quand il y a plusieurs options.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -860,17 +863,30 @@ async function runTool(name, args, session) {
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
-    // Recharger les coiffeuses si roundRobinUris vides
-    if (!roundRobinUris.homme && !roundRobinUris.femme) {
-      console.log("[BOOKING] roundRobinUris vides — rechargement...");
-      await loadCoiffeuses();
-    }
-    // Utiliser l'URI Round Robin si disponible, sinon fallback Railway
-    const uri = (args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme)
-             || serviceUri(args.service);
+    // Charger les coiffeuses si pas encore fait
+    if (coiffeuses.length === 0) await loadCoiffeuses();
+
+    // Priorité : 1) Round Robin  2) Premier event type individuel dispo  3) Variable Railway
+    let uri = args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme;
+
     if (!uri) {
-      console.error("[BOOKING] ❌ Aucun URI trouvé — roundRobinUris:", JSON.stringify(roundRobinUris));
-      return { error: "Service non configuré — aucun event type trouvé pour ce service." };
+      // Chercher dans les event types individuels — prendre celui de la coiffeuse dispo
+      // Si coiffeuse spécifiée dans args, la prioriser
+      const coiffeuseMatch = args.coiffeuse
+        ? coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()))
+        : null;
+      const cible = coiffeuseMatch || coiffeuses.find(c =>
+        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
+      );
+      uri = cible
+        ? (args.service === "femme" ? cible.eventTypes.femme : cible.eventTypes.homme)
+        : serviceUri(args.service);
+      if (cible) console.log("[BOOKING] URI individuel utilisé:", cible.name);
+    }
+
+    if (!uri) {
+      console.error("[BOOKING] ❌ Aucun URI trouvé — roundRobinUris:", JSON.stringify(roundRobinUris), "coiffeuses:", coiffeuses.length);
+      return { error: "Service non configuré — aucun event type trouvé." };
     }
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
