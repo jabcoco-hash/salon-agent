@@ -92,14 +92,36 @@ function fmtPhone(e164 = "") {
 // Épeler un email lettre par lettre pour la lecture vocale
 // ex: "jab@hotmail.com" → "j-a-b arobase h-o-t-m-a-i-l point com"
 function spellEmail(email = "") {
-  const SPECIAL = {
-    "@": "arobase",
-    ".": "point",
-    "_": "tiret bas",
-    "-": "tiret",
-    "+": "plus",
+  if (!email) return "";
+  const lower = email.toLowerCase();
+  const atIdx = lower.indexOf("@");
+  if (atIdx === -1) return lower.split("").join("-");
+
+  const local  = lower.slice(0, atIdx);
+  const domain = lower.slice(atIdx + 1);
+
+  // Domaines courants — lire le mot complet
+  const domainMap = {
+    "gmail.com":     "gmail point com",
+    "hotmail.com":   "hotmail point com",
+    "outlook.com":   "outlook point com",
+    "yahoo.com":     "yahoo point com",
+    "yahoo.ca":      "yahoo point ca",
+    "videotron.ca":  "vidéotron point ca",
+    "videotron.net": "vidéotron point net",
+    "icloud.com":    "icloud point com",
+    "me.com":        "me point com",
+    "live.com":      "live point com",
+    "live.ca":       "live point ca",
+    "sympatico.ca":  "sympatico point ca",
+    "bell.net":      "bell point net",
   };
-  return email.toLowerCase().split("").map(c => SPECIAL[c] || c).join("-").replace(/-arobase-/g, " arobase ").replace(/-point-/g, " point ").replace(/--/g, "-");
+
+  const SPECIAL = { ".": "point", "_": "tiret bas", "-": "tiret", "+": "plus" };
+  const spellPart = str => str.split("").map(c => SPECIAL[c] || c).join("-").replace(/--/g, "-");
+
+  const domainSpoken = domainMap[domain] || spellPart(domain);
+  return `${spellPart(local)} arobase ${domainSpoken}`;
 }
 
 function slotToFrench(iso) {
@@ -193,14 +215,11 @@ async function loadCoiffeuses() {
     const eventTypes = et.collection || [];
 
     // 3. Trouver les event types Round Robin (partagés)
-    const rrHomme = eventTypes.find(e =>
-      e.type === "RoundRobin" &&
-      e.name?.toLowerCase().includes("homme")
-    );
-    const rrFemme = eventTypes.find(e =>
-      e.type === "RoundRobin" &&
-      e.name?.toLowerCase().includes("femme")
-    );
+    // Calendly API retourne "round_robin" (snake_case)
+    const isRR = e => ["round_robin", "RoundRobin", "roundrobin"].includes(e.type?.toLowerCase().replace("_",""));
+    const rrHomme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("homme"));
+    const rrFemme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("femme"));
+    console.log("[CALENDLY] Event types trouvés:", eventTypes.map(e => e.name + " (" + e.type + ")").join(", "));
     roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
     roundRobinUris.femme = rrFemme?.uri || CALENDLY_EVENT_TYPE_URI_FEMME || null;
     console.log(`[CALENDLY] Round Robin — Homme: ${roundRobinUris.homme ? "✅" : "❌"} | Femme: ${roundRobinUris.femme ? "✅" : "❌"}`);
@@ -841,10 +860,18 @@ async function runTool(name, args, session) {
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
+    // Recharger les coiffeuses si roundRobinUris vides
+    if (!roundRobinUris.homme && !roundRobinUris.femme) {
+      console.log("[BOOKING] roundRobinUris vides — rechargement...");
+      await loadCoiffeuses();
+    }
     // Utiliser l'URI Round Robin si disponible, sinon fallback Railway
     const uri = (args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme)
              || serviceUri(args.service);
-    if (!uri)           return { error: "Service non configuré — aucun event type trouvé pour ce service." };
+    if (!uri) {
+      console.error("[BOOKING] ❌ Aucun URI trouvé — roundRobinUris:", JSON.stringify(roundRobinUris));
+      return { error: "Service non configuré — aucun event type trouvé pour ce service." };
+    }
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
 
@@ -1534,6 +1561,16 @@ function html410() {
   return layout("Lien expiré", `<h1>⏰ Lien expiré</h1><p>Ce lien n'est plus valide. Rappelle le salon pour un nouveau lien.</p>`);
 }
 
+// ─── Logs colorés ─────────────────────────────────────────────────────────────
+const R = "[31m", G = "[32m", Y = "[33m", X = "[0m";
+const _origError = console.error.bind(console);
+const _origWarn  = console.warn.bind(console);
+console.error = (...a) => _origError(R + "[ERREUR]", ...a, X);
+console.warn  = (...a) => _origWarn(Y  + "[AVERT]",  ...a, X);
+
 // ─── Démarrage ────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-httpServer.listen(PORT, () => console.log(`✅ ${SALON_NAME} — port ${PORT}`));
+httpServer.listen(PORT, async () => {
+  console.log(G + `✅ ${SALON_NAME} — port ${PORT}` + X);
+  await loadCoiffeuses();
+});
