@@ -440,7 +440,7 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux disponibles. IMPORTANT: convertis TOUJOURS les références temporelles en date ISO avant d'appeler. 'vendredi prochain' = calcule la date ISO du prochain vendredi. 'la semaine prochaine' = date_debut du lundi prochain. 'en mars' = date_debut='2026-03-01'. 'dans 2 semaines' = offset_semaines:2.",
+    description: "Récupère les créneaux disponibles. 'le plus tôt possible' ou 'dès que possible' = PAS de date_debut ni offset, cherche immédiatement. Pour dates relatives: 'vendredi prochain' = date ISO du prochain vendredi, 'la semaine prochaine' = date ISO du lundi prochain, 'en mars' = '2026-03-01', 'dans 2 semaines' = offset_semaines:2.",
     parameters: {
       type: "object",
       properties: {
@@ -546,17 +546,17 @@ async function runTool(name, args, session) {
   // Si le tool prend plus de 5s, envoyer un message vocal de patience
   const keepaliveMsg = ["get_available_slots", "lookup_existing_client", "send_booking_link", "update_contact"].includes(name);
   let keepaliveTimer = null;
-  if (keepaliveMsg && session?.oaiWs?.readyState === 1) {
+  if (keepaliveMsg && session?.openaiWs?.readyState === WebSocket.OPEN) {
     keepaliveTimer = setTimeout(() => {
       try {
-        session.oaiWs.send(JSON.stringify({
+        session.openaiWs.send(JSON.stringify({
           type: "conversation.item.create",
           item: {
             type: "message", role: "user",
             content: [{ type: "input_text", text: "[système: dis 'Patiente un instant...' à voix haute maintenant]" }]
           }
         }));
-        session.oaiWs.send(JSON.stringify({ type: "response.create" }));
+        session.openaiWs.send(JSON.stringify({ type: "response.create" }));
       } catch(e) { /* ignore */ }
     }, 5000);
   }
@@ -578,7 +578,11 @@ async function runTool(name, args, session) {
       }
       const endDate = startDate ? new Date(startDate.getTime() + 7 * 24 * 3600 * 1000) : null;
 
-      let slots = await getSlots(uri, startDate, endDate);
+      // Si pas de date spécifique, chercher dans les 14 prochains jours
+      const searchEnd = endDate || (startDate 
+        ? new Date(startDate.getTime() + 7 * 24 * 3600 * 1000)
+        : new Date(Date.now() + 14 * 24 * 3600 * 1000));
+      let slots = await getSlots(uri, startDate, searchEnd);
 
       // Filtrer STRICTEMENT dans la plage demandée
       if (startDate) {
