@@ -169,9 +169,12 @@ async function getEventLocation(uri) {
 // Structure: [{ name, userUri, eventTypes: { homme: uri, femme: uri } }]
 let coiffeuses = [];
 
+// URIs des event types Round Robin (chargés dynamiquement)
+let roundRobinUris = { homme: null, femme: null };
+
 async function loadCoiffeuses() {
   try {
-    // 1. Récupérer les membres de l'org (exclure le compte principal jabcoco)
+    // 1. Membres de l'org (exclure le compte admin)
     const membersR = await fetch(
       `https://api.calendly.com/organization_memberships?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100`,
       { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
@@ -181,39 +184,50 @@ async function loadCoiffeuses() {
       m.user?.email !== "jabcoco@gmail.com"
     );
 
-    // 2. Récupérer tous les event types de l'org
+    // 2. Tous les event types de l'org (incluant Shared/Round Robin)
     const etR = await fetch(
-      `https://api.calendly.com/event_types?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100`,
+      `https://api.calendly.com/event_types?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100&active=true`,
       { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
     );
     const et = await etR.json();
     const eventTypes = et.collection || [];
 
-    // 3. Mapper chaque coiffeuse avec ses event types
+    // 3. Trouver les event types Round Robin (partagés)
+    const rrHomme = eventTypes.find(e =>
+      e.type === "RoundRobin" &&
+      e.name?.toLowerCase().includes("homme")
+    );
+    const rrFemme = eventTypes.find(e =>
+      e.type === "RoundRobin" &&
+      e.name?.toLowerCase().includes("femme")
+    );
+    roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
+    roundRobinUris.femme = rrFemme?.uri || CALENDLY_EVENT_TYPE_URI_FEMME || null;
+    console.log(`[CALENDLY] Round Robin — Homme: ${roundRobinUris.homme ? "✅" : "❌"} | Femme: ${roundRobinUris.femme ? "✅" : "❌"}`);
+
+    // 4. Mapper chaque coiffeuse avec ses event types individuels
     coiffeuses = staff.map(m => {
-      const userUri  = m.user?.uri;
-      const name     = m.user?.name;
-      const hommeET  = eventTypes.find(e =>
-        e.profile?.owner === userUri &&
-        e.name?.toLowerCase().includes("homme")
+      const userUri = m.user?.uri;
+      const name    = m.user?.name;
+      const hommeET = eventTypes.find(e =>
+        e.profile?.owner === userUri && e.name?.toLowerCase().includes("homme")
       );
-      const femmeET  = eventTypes.find(e =>
-        e.profile?.owner === userUri &&
-        e.name?.toLowerCase().includes("femme")
+      const femmeET = eventTypes.find(e =>
+        e.profile?.owner === userUri && e.name?.toLowerCase().includes("femme")
       );
       return {
         name,
         userUri,
         eventTypes: {
           homme: hommeET?.uri || null,
-          femme: femmeET?.uri  || null,
+          femme: femmeET?.uri || null,
         }
       };
     }).filter(c => c.eventTypes.homme || c.eventTypes.femme);
 
-    console.log(`[CALENDLY] ✅ ${coiffeuses.length} coiffeuses chargées: ${coiffeuses.map(c => c.name).join(", ")}`);
+    console.log(`[CALENDLY] ✅ ${coiffeuses.length} coiffeuses: ${coiffeuses.map(c => c.name).join(", ")}`);
   } catch(e) {
-    console.error("[CALENDLY] ❌ Erreur chargement coiffeuses:", e.message);
+    console.error("[CALENDLY] ❌ Erreur loadCoiffeuses:", e.message);
   }
 }
 
@@ -408,18 +422,17 @@ COMPORTEMENT FONDAMENTAL :
 - Tu ne poses qu'UNE seule question à la fois. Tu attends la réponse avant de continuer.
 
 ACCUEIL :
-- Tu dis uniquement : "Bonjour, Salon ${SALON_NAME}, Hélène à l'appareil!" — puis tu te TAIS et tu attends.
-- Si le client ne parle pas après 3-4 secondes, tu dis "Allo?" et tu attends encore.
-- Tu ne poses PAS de question dans ton accueil.
+- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME}, je m'appelle Hélène l'assistante virtuelle! Comment puis-je t'aider?"
+- Puis SILENCE COMPLET. Tu attends que le client parle. Rien d'autre.
 
 PRISE DE RENDEZ-VOUS — dans cet ordre, UNE étape à la fois :
 
 1. TYPE ET COIFFEUSE :
    → Demande si c'est une coupe homme ou femme.
    → Coloration, mise en plis, teinture, balayage → transfer_to_agent immédiatement.
-   → Demande si le client a une préférence de coiffeuse : "Tu as une préférence pour une coiffeuse en particulier?"
-   → Si oui → note le prénom et passe le en paramètre "coiffeuse" dans get_available_slots
-   → Si non → cherche tous les créneaux disponibles peu importe la coiffeuse
+   → Demande ensuite : "Tu as une préférence pour une coiffeuse en particulier, ou n'importe laquelle fait l'affaire?"
+   → Si préférence → passe le prénom en paramètre "coiffeuse" dans get_available_slots
+   → Si pas de préférence → appelle get_available_slots SANS paramètre coiffeuse (Round Robin automatique)
 
 2. DISPONIBILITÉS :
    → Si date relative ("vendredi prochain") → confirme la date calculée avant de chercher.
@@ -444,14 +457,21 @@ PRISE DE RENDEZ-VOUS — dans cet ordre, UNE étape à la fois :
    → Épelle le courriel lettre par lettre.
    → "Ton courriel c'est [courriel épelé], c'est encore bon?" → attends OUI/NON.
 
-7. ENVOI :
+7. ENVOI ET FIN :
    → Appelle send_booking_link.
-   → "C'est fait! Tu vas recevoir la confirmation. Bonne journée!"
-   → Appelle end_call.
+   → Après succès → dis : "C'est tout bon! Tu vas recevoir la confirmation par texto. Bonne journée!"
+   → Appelle end_call IMMÉDIATEMENT après — sans rien ajouter.
 
 FIN D'APPEL SANS RDV :
-   → Client dit merci/au revoir → "Bonne journée!" → end_call.
-   → Ne mentionne JAMAIS de confirmation si aucun RDV n'a été pris.
+   → Client dit "merci", "bonne journée", "c'est tout", "au revoir" sans avoir réservé :
+   → Dis : "Avec plaisir! Bonne journée!"
+   → Appelle end_call IMMÉDIATEMENT après — sans rien ajouter.
+   → Ne mentionne JAMAIS de confirmation, texto ou RDV si rien n'a été réservé.
+
+RÈGLE ABSOLUE SUR end_call :
+   → end_call = OBLIGATOIRE après toute salutation finale.
+   → Ne jamais laisser l'appel ouvert après avoir dit au revoir.
+   → Ne jamais demander "Est-ce que je peux faire autre chose?" — termine l'appel directement.
 
 RÈGLES :
 - Prix, adresse, heures → réponds directement, sans appeler d'outil.
@@ -562,7 +582,7 @@ const TOOLS = [
   {
     type: "function",
     name: "end_call",
-    description: "Raccroche l'appel proprement. Appelle UNIQUEMENT après avoir dit au revoir suite à un send_booking_link réussi.",
+    description: "Raccroche l'appel proprement. Appelle après avoir dit au revoir, que ce soit après un RDV confirmé OU quand le client termine l'appel sans RDV. TOUJOURS appeler end_call après la salutation finale — ne jamais laisser l'appel ouvert.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -615,6 +635,25 @@ async function runTool(name, args, session) {
           c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
         );
         if (match) coiffeusesCibles = [match];
+      }
+
+      // Si pas de coiffeuse spécifique → utiliser Round Robin (une coiffeuse sera assignée par Calendly)
+      if (!args.coiffeuse && roundRobinUris[args.service === "femme" ? "femme" : "homme"]) {
+        const rrUri = roundRobinUris[args.service === "femme" ? "femme" : "homme"];
+        const rrSlots = await getSlots(rrUri, startDate, searchEnd);
+        const slotCoiffeuseRR = {};
+        for (const iso of rrSlots) slotCoiffeuseRR[iso] = ["disponible"];
+        const uniqueRR = Object.keys(slotCoiffeuseRR).sort();
+        const amRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() < 12);
+        const pmRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() >= 12);
+        const spaced = arr => arr.filter((_,i) => i%2===0);
+        let sel = [...spaced(amRR).slice(0,2), ...spaced(pmRR).slice(0,2)];
+        if (sel.length < 2) sel = uniqueRR.slice(0,4);
+        return {
+          disponible: sel.length > 0,
+          slots: sel.map(iso => ({ iso, label: slotToFrench(iso), coiffeuses_dispo: [] })),
+          note: "Présente les créneaux. La coiffeuse sera assignée automatiquement par Calendly selon les disponibilités.",
+        };
       }
 
       // Fallback Railway si pas de coiffeuses dans le cache
@@ -731,8 +770,8 @@ async function runTool(name, args, session) {
         has_email: !!client.email,
         spelled_email: client.email ? spellEmail(client.email) : null,
         message: client.email
-          ? `Client existant : ${client.name}, courriel : ${client.email} (à épeler : ${spellEmail(client.email)}). Salue-le par son prénom et confirme le courriel EN L'ÉPELANT : "J'ai ton courriel ${spellEmail(client.email)} dans notre dossier — c'est toujours bon?"`
-          : `Client existant : ${client.name}, pas de courriel. Salue-le par son prénom et demande son courriel.`,
+          ? `Client trouvé : ${client.name}. Dis : "J'ai un dossier au nom de ${client.name} — c'est bien toi?" Attends OUI. Ensuite épelle le courriel : "J'ai le courriel ${spellEmail(client.email)} dans le dossier — c'est toujours bon?"`
+          : `Client trouvé : ${client.name}, pas de courriel enregistré. Dis : "J'ai un dossier au nom de ${client.name} — c'est bien toi?" Attends OUI.`,
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
@@ -785,8 +824,10 @@ async function runTool(name, args, session) {
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
-    const uri = serviceUri(args.service);
-    if (!uri)           return { error: "Service non configuré." };
+    // Utiliser l'URI Round Robin si disponible, sinon fallback Railway
+    const uri = (args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme)
+             || serviceUri(args.service);
+    if (!uri)           return { error: "Service non configuré — aucun event type trouvé pour ce service." };
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
 
@@ -1159,7 +1200,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "L'appel commence. Dis UNIQUEMENT : 'Bonjour, je suis Hélène, l\'assistante virtuelle du " + SALON_NAME + "! Comment je peux t\'aider aujourd\'hui?' Puis arrête-toi et attends.",
+          text: "L'appel commence. Dis UNIQUEMENT cette phrase exacte : 'Bienvenu au " + SALON_NAME + ", je m\'appelle Hélène l\'assistante virtuelle! Comment puis-je t\'aider?' Puis ARRÊTE-TOI complètement et attends que le client parle.",
         }],
       },
     }));
