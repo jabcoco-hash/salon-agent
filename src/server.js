@@ -38,6 +38,7 @@ const {
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
   CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
+  CALENDLY_ORG_URI = "https://api.calendly.com/organizations/bb62d2e8-761e-48ed-9917-58e0a39126dd",
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
 } = process.env;
@@ -164,6 +165,58 @@ async function getEventLocation(uri) {
 
 // ─── Google OAuth token ───────────────────────────────────────────────────────
 // Recharger le refresh_token depuis Railway au démarrage
+// ─── Cache coiffeuses Calendly ────────────────────────────────────────────────
+// Structure: [{ name, userUri, eventTypes: { homme: uri, femme: uri } }]
+let coiffeuses = [];
+
+async function loadCoiffeuses() {
+  try {
+    // 1. Récupérer les membres de l'org (exclure le compte principal jabcoco)
+    const membersR = await fetch(
+      `https://api.calendly.com/organization_memberships?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100`,
+      { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
+    );
+    const members = await membersR.json();
+    const staff = (members.collection || []).filter(m =>
+      m.user?.email !== "jabcoco@gmail.com"
+    );
+
+    // 2. Récupérer tous les event types de l'org
+    const etR = await fetch(
+      `https://api.calendly.com/event_types?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100`,
+      { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
+    );
+    const et = await etR.json();
+    const eventTypes = et.collection || [];
+
+    // 3. Mapper chaque coiffeuse avec ses event types
+    coiffeuses = staff.map(m => {
+      const userUri  = m.user?.uri;
+      const name     = m.user?.name;
+      const hommeET  = eventTypes.find(e =>
+        e.profile?.owner === userUri &&
+        e.name?.toLowerCase().includes("homme")
+      );
+      const femmeET  = eventTypes.find(e =>
+        e.profile?.owner === userUri &&
+        e.name?.toLowerCase().includes("femme")
+      );
+      return {
+        name,
+        userUri,
+        eventTypes: {
+          homme: hommeET?.uri || null,
+          femme: femmeET?.uri  || null,
+        }
+      };
+    }).filter(c => c.eventTypes.homme || c.eventTypes.femme);
+
+    console.log(`[CALENDLY] ✅ ${coiffeuses.length} coiffeuses chargées: ${coiffeuses.map(c => c.name).join(", ")}`);
+  } catch(e) {
+    console.error("[CALENDLY] ❌ Erreur chargement coiffeuses:", e.message);
+  }
+}
+
 let googleTokens = process.env.GOOGLE_REFRESH_TOKEN ? {
   access_token:  null, // sera rafraîchi automatiquement
   refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
@@ -361,12 +414,18 @@ ACCUEIL :
 
 PRISE DE RENDEZ-VOUS — dans cet ordre, UNE étape à la fois :
 
-1. TYPE : demande si c'est une coupe homme ou femme.
+1. TYPE ET COIFFEUSE :
+   → Demande si c'est une coupe homme ou femme.
    → Coloration, mise en plis, teinture, balayage → transfer_to_agent immédiatement.
+   → Demande si le client a une préférence de coiffeuse : "Tu as une préférence pour une coiffeuse en particulier?"
+   → Si oui → note le prénom et passe le en paramètre "coiffeuse" dans get_available_slots
+   → Si non → cherche tous les créneaux disponibles peu importe la coiffeuse
 
 2. DISPONIBILITÉS :
    → Si date relative ("vendredi prochain") → confirme la date calculée avant de chercher.
-   → Appelle get_available_slots, propose 2-3 créneaux variés (matin ET après-midi).
+   → Appelle get_available_slots (avec coiffeuse si demandée).
+   → Présente les créneaux avec les coiffeuses dispo : "J'ai mardi à 9h avec Ariane, et mercredi à 14h avec Laurie ou Ariane."
+   → Si coiffeuse demandée pas dispo dans un créneau → propose une autre : "Ariane n'est pas dispo ce mardi, mais Laurie l'est — ça te convient?"
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 3. CONFIRMATION créneau :
@@ -413,6 +472,7 @@ const TOOLS = [
       type: "object",
       properties: {
         service:    { type: "string", enum: ["homme", "femme", "nonbinaire"] },
+        coiffeuse:  { type: "string", description: "Prénom de la coiffeuse souhaitée. Omets si pas de préférence." },
         jour:       { type: "string", description: "Jour de la semaine UNIQUEMENT en un mot: 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'. Ne jamais mettre 'prochain' ou autre qualificatif." },
         periode:    { type: "string", enum: ["matin", "après-midi", "soir"], description: "Période souhaitée. Omets si non mentionnée." },
         date_debut: { type: "string", description: "Date ISO YYYY-MM-DD. Calcule la vraie date: 'vendredi prochain' → calcule et mets la date ISO du prochain vendredi. 'la semaine prochaine' → date du lundi prochain. 'en mars' → '2026-03-01'. Omets pour chercher à partir d'aujourd'hui." },
@@ -489,6 +549,12 @@ const TOOLS = [
   },
   {
     type: "function",
+    name: "get_coiffeuses",
+    description: "Retourne la liste des coiffeuses disponibles. Appelle cet outil quand le client demande à choisir une coiffeuse ou quand tu dois présenter les options.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
+    type: "function",
     name: "get_current_time",
     description: "Retourne l'heure locale exacte au Québec. Appelle AVANT de souhaiter une belle matinée/après-midi/soirée pour utiliser la bonne salutation.",
     parameters: { type: "object", properties: {}, required: [] },
@@ -519,8 +585,6 @@ async function runTool(name, args, session) {
   };
 
   if (name === "get_available_slots") {
-    const uri = serviceUri(args.service);
-    if (!uri) return { error: "Type de coupe non configuré dans Railway." };
     try {
       // Calculer la fenêtre de dates
       let startDate = null;
@@ -533,12 +597,45 @@ async function runTool(name, args, session) {
         startDate = new Date(base.getTime() + args.offset_semaines * 7 * 24 * 3600 * 1000);
       }
       const endDate = startDate ? new Date(startDate.getTime() + 7 * 24 * 3600 * 1000) : null;
-
-      // Si pas de date spécifique, chercher dans les 14 prochains jours
-      const searchEnd = endDate || (startDate 
+      const searchEnd = endDate || (startDate
         ? new Date(startDate.getTime() + 7 * 24 * 3600 * 1000)
         : new Date(Date.now() + 14 * 24 * 3600 * 1000));
-      let slots = await getSlots(uri, startDate, searchEnd);
+
+      // Charger coiffeuses si pas encore fait
+      if (coiffeuses.length === 0) await loadCoiffeuses();
+
+      // Déterminer quelles coiffeuses chercher
+      let coiffeusesCibles = coiffeuses.filter(c =>
+        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
+      );
+
+      // Filtrer par coiffeuse demandée si spécifiée
+      if (args.coiffeuse) {
+        const match = coiffeusesCibles.find(c =>
+          c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
+        );
+        if (match) coiffeusesCibles = [match];
+      }
+
+      // Fallback Railway si pas de coiffeuses dans le cache
+      if (coiffeusesCibles.length === 0) {
+        const fallbackUri = serviceUri(args.service);
+        if (!fallbackUri) return { error: "Aucun event type configuré pour ce service." };
+        coiffeusesCibles = [{ name: "disponible", eventTypes: { homme: fallbackUri, femme: fallbackUri } }];
+      }
+
+      // Récupérer les slots de toutes les coiffeuses cibles
+      const slotCoiffeuse = {}; // iso -> [noms]
+      for (const c of coiffeusesCibles) {
+        const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
+        if (!cUri) continue;
+        const cSlots = await getSlots(cUri, startDate, searchEnd);
+        for (const iso of cSlots) {
+          if (!slotCoiffeuse[iso]) slotCoiffeuse[iso] = [];
+          slotCoiffeuse[iso].push(c.name);
+        }
+      }
+      let slots = Object.keys(slotCoiffeuse).sort();
 
       // Filtrer STRICTEMENT dans la plage demandée
       if (startDate) {
@@ -607,8 +704,12 @@ async function runTool(name, args, session) {
       return {
         disponible: true,
         periode: startDate ? startDate.toLocaleDateString("fr-CA") : "cette semaine",
-        slots: selected.map(iso => ({ iso, label: slotToFrench(iso) })),
-        note: "Lis chaque label UNE SEULE FOIS. Pour plus d'options: offset_semaines+1.",
+        slots: selected.map(iso => ({
+          iso,
+          label: slotToFrench(iso),
+          coiffeuses_dispo: slotCoiffeuse[iso] || [],
+        })),
+        note: "Présente les créneaux avec les coiffeuses disponibles. Ex: 'Mardi à 9h avec Ariane ou Laurie'. Si coiffeuse spécifique demandée et pas dispo dans ce créneau, mentionne-le et propose une autre.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -779,6 +880,21 @@ ${link}`
     return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
 
+  if (name === "get_coiffeuses") {
+    if (coiffeuses.length === 0) await loadCoiffeuses();
+    const liste = coiffeuses.map(c => ({
+      nom: c.name,
+      services: [
+        c.eventTypes.homme ? "homme" : null,
+        c.eventTypes.femme ? "femme" : null,
+      ].filter(Boolean)
+    }));
+    return {
+      coiffeuses: liste,
+      message: `Coiffeuses disponibles : ${liste.map(c => c.nom).join(", ")}. Présente-les au client et demande sa préférence. Si pas de préférence, dis que tu vas prendre la première disponible.`
+    };
+  }
+
   if (name === "get_current_time") {
     const now = new Date();
     const localStr = now.toLocaleString("fr-CA", { timeZone: CALENDLY_TIMEZONE, hour: "2-digit", minute: "2-digit", hour12: false });
@@ -860,7 +976,17 @@ app.get("/calendly-info", async (req, res) => {
       ).join("\n\n")}</pre>
       <h3>Event Types (${et.collection?.length || 0})</h3>
       <pre style="background:#f0f0f0;padding:10px">${(et.collection || []).map(e =>
-        "Nom   : " + e.name + "\nURI   : " + e.uri + "\nOwner : " + e.profile?.name
+        "Nom        : " + e.name +
+        "\nURI        : " + e.uri +
+        "\nOwner name : " + e.profile?.name +
+        "\nOwner URI  : " + e.profile?.owner +
+        "\nType       : " + e.type +
+        "\nActif      : " + e.active
+      ).join("\n\n")}</pre>
+      <h3>Variables à mettre dans Railway</h3>
+      <pre style="background:#e8f5e9;padding:10px">${(et.collection || []).filter(e => e.active).map(e =>
+        "# " + e.name + "\n" +
+        "CALENDLY_EVENT_TYPE_URI_" + e.name.toUpperCase().replace(/[^A-Z0-9]/g, "_") + " = " + e.uri
       ).join("\n\n")}</pre>
     `);
   } catch(e) {
