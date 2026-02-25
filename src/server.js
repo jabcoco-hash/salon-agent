@@ -448,14 +448,14 @@ const TOOLS = [
   {
     type: "function",
     name: "send_booking_link",
-    description: "Envoie le SMS de confirmation. Si email connu (client existant), crée directement le RDV Calendly et envoie la confirmation complète. Sinon envoie un lien SMS pour saisir le courriel.",
+    description: "Envoie le SMS de confirmation et crée le RDV. OBLIGATOIRE : tu dois avoir service + slot_iso + name + phone avant d'appeler. Si l'un de ces champs manque, NE PAS appeler — retourne demander l'info manquante au client d'abord.",
     parameters: {
       type: "object",
       properties: {
-        service:  { type: "string", enum: ["homme", "femme", "nonbinaire"] },
-        slot_iso: { type: "string" },
-        name:     { type: "string" },
-        phone:    { type: "string", description: "Numéro validé en format E.164 ou 10 chiffres" },
+        service:  { type: "string", enum: ["homme", "femme", "nonbinaire"], description: "OBLIGATOIRE — type de coupe" },
+        slot_iso: { type: "string", description: "OBLIGATOIRE — date ISO du créneau choisi" },
+        name:     { type: "string", description: "OBLIGATOIRE — nom confirmé du client dans cet appel" },
+        phone:    { type: "string", description: "OBLIGATOIRE — numéro validé E.164 ou 10 chiffres" },
         email:    { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
       },
       required: ["service", "slot_iso", "name", "phone"],
@@ -671,6 +671,16 @@ async function runTool(name, args, session) {
 
   if (name === "send_booking_link") {
     console.log(`[BOOKING] Début — service:${args.service} slot:${args.slot_iso} name:${args.name} phone:${args.phone} email:${args.email || "inconnu"}`);
+
+    // Valider les champs obligatoires
+    const missing = [];
+    if (!args.service)   missing.push("service (homme/femme)");
+    if (!args.slot_iso)  missing.push("créneau choisi (slot_iso)");
+    if (!args.name)      missing.push("nom du client");
+    if (missing.length > 0) {
+      console.error(`[BOOKING] ❌ Champs manquants: ${missing.join(", ")}`);
+      return { error: `Informations manquantes: ${missing.join(", ")}. Assure-toi d'avoir complété toutes les étapes avant d'appeler send_booking_link.` };
+    }
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
@@ -986,7 +996,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "L'appel commence. Dis uniquement: 'Bonjour, Salon " + SALON_NAME + ", Hélène à l\'appareil!' — rien d\'autre. Attends que le client parle.",
+          text: "L'appel commence. Dis UNIQUEMENT : 'Bonjour, je suis Hélène, l\'assistante virtuelle du " + SALON_NAME + "! Comment je peux t\'aider aujourd\'hui?' Puis arrête-toi et attends.",
         }],
       },
     }));
