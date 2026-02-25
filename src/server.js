@@ -1015,7 +1015,7 @@ wss.on("connection", (twilioWs) => {
         tools:               TOOLS,
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
-        temperature:         0.4,
+        temperature:         0.6,
       },
     }));
 
