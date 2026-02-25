@@ -339,7 +339,13 @@ async function sendSms(to, body) {
 function systemPrompt(callerNumber) {
   const callerDisplay = callerNumber ? fmtPhone(callerNumber) : null;
   return `Tu es Marie, réceptionniste du ${SALON_NAME} à ${SALON_CITY}. Français québécois naturel. Énergie chaleureuse.
-RÈGLE FONDAMENTALE : tu dis bonjour, tu te présentes, et tu ATTENDS que le client parle. Tu ne poses AUCUNE question tant que le client n'a pas dit au moins une phrase complète. UNE question à la fois maximum.
+RÈGLE FONDAMENTALE — ATTENDRE LA RÉPONSE :
+- Tu poses UNE question, puis tu te TAIS complètement et tu attends la réponse
+- Tu ne parles PAS tant que le client n'a pas répondu — même si le silence dure plusieurs secondes
+- Tu ne répètes PAS ta question, tu ne remplis PAS le silence, tu n'enchaînes PAS
+- Après avoir proposé des créneaux → silence total jusqu'à ce que le client choisisse
+- Après avoir posé "c'est bien ça?" → silence total jusqu'au OUI/NON
+- UNE seule phrase, UNE seule question, puis SILENCE
 
 SALON : ${SALON_ADDRESS}
 HEURE OUVERTURE : ${SALON_HOURS}
@@ -544,24 +550,12 @@ const TOOLS = [
 async function runTool(name, args, session) {
   console.log(`[TOOL] ${name}`, JSON.stringify(args));
 
-  // Si le tool prend plus de 5s, envoyer un message vocal de patience
-  const keepaliveMsg = ["get_available_slots", "lookup_existing_client", "send_booking_link", "update_contact"].includes(name);
-  let keepaliveTimer = null;
-  if (keepaliveMsg && session?.openaiWs?.readyState === WebSocket.OPEN) {
-    keepaliveTimer = setTimeout(() => {
-      try {
-        session.openaiWs.send(JSON.stringify({
-          type: "conversation.item.create",
-          item: {
-            type: "message", role: "user",
-            content: [{ type: "input_text", text: "[système: dis 'Patiente un instant...' à voix haute maintenant]" }]
-          }
-        }));
-        session.openaiWs.send(JSON.stringify({ type: "response.create" }));
-      } catch(e) { /* ignore */ }
-    }, 5000);
-  }
-  const clearKeepalive = () => { if (keepaliveTimer) clearTimeout(keepaliveTimer); };
+  // Logger les tools lents
+  const toolStart = Date.now();
+  const clearKeepalive = () => {
+    const elapsed = Date.now() - toolStart;
+    if (elapsed > 3000) console.log(`[TOOL] ${name} a pris ${elapsed}ms`);
+  };
 
   if (name === "get_available_slots") {
     const uri = serviceUri(args.service);
@@ -1010,9 +1004,9 @@ wss.on("connection", (twilioWs) => {
       session: {
         turn_detection: {
           type:                "server_vad",
-          threshold:           0.85,
-          prefix_padding_ms:   500,
-          silence_duration_ms: 1200,
+          threshold:           0.5,    // plus sensible pour détecter la parole
+          prefix_padding_ms:   300,
+          silence_duration_ms: 800,    // attendre 800ms de silence avant de répondre
         },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
@@ -1021,7 +1015,7 @@ wss.on("connection", (twilioWs) => {
         tools:               TOOLS,
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
-        temperature:         0.6,
+        temperature:         0.4,
       },
     }));
 
