@@ -206,20 +206,39 @@ async function loadCoiffeuses() {
       m.user?.email !== "jabcoco@gmail.com"
     );
 
-    // 2. Tous les event types de l'org (incluant Shared/Round Robin)
-    const etR = await fetch(
-      `https://api.calendly.com/event_types?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&count=100&active=true`,
-      { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
-    );
-    const et = await etR.json();
-    const eventTypes = et.collection || [];
+    // 2. Event types personnels (par user) + partagés (par org) — deux appels séparés
+    const fetchET = async (params) => {
+      const r = await fetch(
+        `https://api.calendly.com/event_types?${params}&count=100&active=true`,
+        { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } }
+      );
+      const j = await r.json();
+      return j.collection || [];
+    };
 
-    // 3. Trouver les event types Round Robin (partagés)
-    // Calendly API retourne "round_robin" (snake_case)
-    const isRR = e => ["round_robin", "RoundRobin", "roundrobin"].includes(e.type?.toLowerCase().replace("_",""));
+    // Chercher les event types de l'org (inclut Shared)
+    const orgET    = await fetchET(`organization=${encodeURIComponent(CALENDLY_ORG_URI)}`);
+    // Chercher aussi les event types du compte admin (au cas où)
+    const adminURI = (await (await fetch("https://api.calendly.com/users/me", { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } })).json()).resource?.uri || "";
+    const adminET  = adminURI ? await fetchET(`user=${encodeURIComponent(adminURI)}`) : [];
+
+    // Fusionner et dédupliquer par URI
+    const seen = new Set();
+    const eventTypes = [...orgET, ...adminET].filter(e => {
+      if (seen.has(e.uri)) return false;
+      seen.add(e.uri);
+      return true;
+    });
+
+    console.log("[CALENDLY] Event types trouvés (" + eventTypes.length + "):", eventTypes.map(e => e.name + " [" + e.type + "]").join(", "));
+
+    // 3. Trouver les event types Round Robin
+    const isRR = e => {
+      const t = (e.type || "").toLowerCase().replace(/[_\s]/g, "");
+      return t.includes("roundrobin") || t === "group";
+    };
     const rrHomme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("homme"));
     const rrFemme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("femme"));
-    console.log("[CALENDLY] Event types trouvés:", eventTypes.map(e => e.name + " (" + e.type + ")").join(", "));
     roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
     roundRobinUris.femme = rrFemme?.uri || CALENDLY_EVENT_TYPE_URI_FEMME || null;
     console.log(`[CALENDLY] Round Robin — Homme: ${roundRobinUris.homme ? "✅" : "❌"} | Femme: ${roundRobinUris.femme ? "✅" : "❌"}`);
