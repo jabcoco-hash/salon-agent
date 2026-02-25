@@ -1004,9 +1004,9 @@ wss.on("connection", (twilioWs) => {
       session: {
         turn_detection: {
           type:                "server_vad",
-          threshold:           0.5,    // plus sensible pour détecter la parole
+          threshold:           0.7,    // équilibre : détecte la parole sans réagir au bruit de ligne
           prefix_padding_ms:   300,
-          silence_duration_ms: 800,    // attendre 800ms de silence avant de répondre
+          silence_duration_ms: 1000,
         },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
