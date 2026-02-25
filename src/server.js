@@ -206,7 +206,9 @@ async function loadCoiffeuses() {
       m.user?.email !== "jabcoco@gmail.com"
     );
 
-    // 2. Event types personnels (par user) + partagés (par org) — deux appels séparés
+    // 2. Event types : org + admin + chaque membre du staff
+    //    Les Round Robin (type="round_robin") n'apparaissent dans l'appel organization=
+    //    que si l'API token a les bons droits — on les trouve aussi via user= de chaque membre.
     const fetchET = async (params) => {
       const r = await fetch(
         `https://api.calendly.com/event_types?${params}&count=100&active=true`,
@@ -216,15 +218,22 @@ async function loadCoiffeuses() {
       return j.collection || [];
     };
 
-    // Chercher les event types de l'org (inclut Shared)
-    const orgET    = await fetchET(`organization=${encodeURIComponent(CALENDLY_ORG_URI)}`);
-    // Chercher aussi les event types du compte admin (au cas où)
+    // Appel org (peut manquer les Round Robin selon les droits du token)
+    const orgET = await fetchET(`organization=${encodeURIComponent(CALENDLY_ORG_URI)}`);
+
+    // Appel admin
     const adminURI = (await (await fetch("https://api.calendly.com/users/me", { headers: { Authorization: `Bearer ${CALENDLY_API_TOKEN}` } })).json()).resource?.uri || "";
     const adminET  = adminURI ? await fetchET(`user=${encodeURIComponent(adminURI)}`) : [];
 
+    // Appels par membre du staff — nécessaire pour attraper les Round Robin
+    const staffETArrays = await Promise.all(
+      staff.map(m => m.user?.uri ? fetchET(`user=${encodeURIComponent(m.user.uri)}`) : Promise.resolve([]))
+    );
+    const allStaffET = staffETArrays.flat();
+
     // Fusionner et dédupliquer par URI
     const seen = new Set();
-    const eventTypes = [...orgET, ...adminET].filter(e => {
+    const eventTypes = [...orgET, ...adminET, ...allStaffET].filter(e => {
       if (seen.has(e.uri)) return false;
       seen.add(e.uri);
       return true;
@@ -237,6 +246,9 @@ async function loadCoiffeuses() {
       const t = (e.type || "").toLowerCase().replace(/[_\s]/g, "");
       return t.includes("roundrobin") || t === "group";
     };
+    // Log détaillé pour debug
+    const rrCandidates = eventTypes.filter(e => isRR(e));
+    console.log(`[CALENDLY] Candidats Round Robin (${rrCandidates.length}):`, rrCandidates.map(e => `"${e.name}" [type=${e.type}]`).join(", ") || "aucun");
     const rrHomme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("homme"));
     const rrFemme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("femme"));
     roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
@@ -1111,6 +1123,69 @@ app.get("/calendly-info", async (req, res) => {
     `);
   } catch(e) {
     res.status(500).send("Erreur: " + e.message);
+  }
+});
+
+// ─── Route debug brut Calendly ────────────────────────────────────────────────
+app.get("/calendly-raw", async (req, res) => {
+  try {
+    const h = { Authorization: `Bearer ${CALENDLY_API_TOKEN}` };
+    const me = await (await fetch("https://api.calendly.com/users/me", { headers: h })).json();
+    const orgUri   = me.resource?.current_organization || CALENDLY_ORG_URI;
+    const adminUri = me.resource?.uri || "";
+    const members = await (await fetch(
+      `https://api.calendly.com/organization_memberships?organization=${encodeURIComponent(orgUri)}&count=100`,
+      { headers: h }
+    )).json();
+    const etOrg = await (await fetch(
+      `https://api.calendly.com/event_types?organization=${encodeURIComponent(orgUri)}&count=100`,
+      { headers: h }
+    )).json();
+    const etAdmin = adminUri ? await (await fetch(
+      `https://api.calendly.com/event_types?user=${encodeURIComponent(adminUri)}&count=100`,
+      { headers: h }
+    )).json() : { collection: [] };
+    const memberResults = [];
+    for (const m of (members.collection || [])) {
+      const userUri = m.user?.uri;
+      if (!userUri) continue;
+      const etUser = await (await fetch(
+        `https://api.calendly.com/event_types?user=${encodeURIComponent(userUri)}&count=100`,
+        { headers: h }
+      )).json();
+      memberResults.push({ email: m.user?.email, name: m.user?.name, uri: userUri, event_types: etUser.collection || [] });
+    }
+    const allET = new Map();
+    const addAll = arr => arr.forEach(e => { if (e.uri) allET.set(e.uri, e); });
+    addAll(etOrg.collection || []);
+    addAll(etAdmin.collection || []);
+    memberResults.forEach(m => addAll(m.event_types));
+    const isRR = e => { const t = (e.type||"").toLowerCase().replace(/[_\s]/g,""); return t.includes("roundrobin") || t === "group"; };
+    const rrFound = [...allET.values()].filter(isRR);
+    const lines = arr => arr.map(e => e.name + " | type=" + e.type + " | active=" + e.active + "\nURI: " + e.uri).join("\n\n");
+    res.type("text/html").send(
+      "<!DOCTYPE html><html><head><meta charset='UTF-8'><style>" +
+      "body{font-family:monospace;padding:20px;background:#1a1a1a;color:#e0e0e0}" +
+      "h2{color:#6c47ff}h3{color:#aaa;margin-top:30px}h4{color:#ccc}" +
+      "pre{background:#2a2a2a;padding:16px;border-radius:8px;overflow-x:auto;white-space:pre-wrap;font-size:13px}" +
+      ".rr{background:#1a3a1a;border-left:4px solid #4caf50}</style></head><body>" +
+      "<h2>Calendly Raw Debug</h2>" +
+      "<h3>Admin URI</h3><pre>" + adminUri + "</pre>" +
+      "<h3>Org URI</h3><pre>" + orgUri + "</pre>" +
+      "<h3>Tous les Event Types (" + allET.size + ")</h3><pre>" + (lines([...allET.values()]) || "AUCUN") + "</pre>" +
+      "<h3>Round Robin detectes</h3><pre class='rr'>" +
+        (rrFound.length ? rrFound.map(e => "OK " + e.name + "\n   type: " + e.type + "\n   URI:  " + e.uri).join("\n\n") : "AUCUN ROUND ROBIN") +
+      "</pre>" +
+      "<h3>Par membre</h3>" + memberResults.map(m =>
+        "<h4>" + m.name + " (" + m.email + ")</h4><pre>" + (lines(m.event_types) || "aucun") + "</pre>"
+      ).join("") +
+      "<h3>JSON brut org</h3><pre>" + JSON.stringify(etOrg, null, 2) + "</pre>" +
+      "<h3>JSON brut admin</h3><pre>" + JSON.stringify(etAdmin, null, 2) + "</pre>" +
+      memberResults.map(m => "<h3>JSON " + m.name + "</h3><pre>" + JSON.stringify(m.event_types, null, 2) + "</pre>").join("") +
+      "</body></html>"
+    );
+  } catch(e) {
+    res.status(500).send("<pre>Erreur: " + e.message + "</pre>");
   }
 });
 
