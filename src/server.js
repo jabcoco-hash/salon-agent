@@ -242,13 +242,11 @@ async function loadCoiffeuses() {
     console.log("[CALENDLY] Event types trouvés (" + eventTypes.length + "):", eventTypes.map(e => e.name + " [" + e.type + "]").join(", "));
 
     // 3. Trouver les event types Round Robin
-    const isRR = e => {
-      const t = (e.type || "").toLowerCase().replace(/[_\s]/g, "");
-      return t.includes("roundrobin") || t === "group";
-    };
-    // Log détaillé pour debug
-    const rrCandidates = eventTypes.filter(e => isRR(e));
-    console.log(`[CALENDLY] Candidats Round Robin (${rrCandidates.length}):`, rrCandidates.map(e => `"${e.name}" [type=${e.type}]`).join(", ") || "aucun");
+    // IMPORTANT: pooling_type="round_robin" est le bon indicateur.
+    // Le champ "type" est toujours "StandardEventType" pour TOUS les event types, Round Robin inclus.
+    const isRR = e => e.pooling_type === "round_robin";
+    const rrCandidates = eventTypes.filter(isRR);
+    console.log(`[CALENDLY] Candidats Round Robin (${rrCandidates.length}):`, rrCandidates.map(e => `"${e.name}" URI=${e.uri}`).join(", ") || "aucun");
     const rrHomme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("homme"));
     const rrFemme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("femme"));
     roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
@@ -694,57 +692,40 @@ async function runTool(name, args, session) {
       // Charger coiffeuses si pas encore fait
       if (coiffeuses.length === 0) await loadCoiffeuses();
 
-      // Déterminer quelles coiffeuses chercher
-      let coiffeusesCibles = coiffeuses.filter(c =>
-        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
-      );
+      // ── Choisir l'URI à appeler ──────────────────────────────────────────────
+      // Règle : coiffeuse demandée → son URI individuel (Calendly lui assigne le RDV)
+      //         pas de préférence  → URI Round Robin (Calendly dispatch automatique)
+      const serviceKey = args.service === "femme" ? "femme" : "homme";
+      const rrUri = roundRobinUris[serviceKey];
 
-      // Filtrer par coiffeuse demandée si spécifiée
+      let fetchUri = null;        // URI unique à appeler (RR ou individuel)
+      let slotCoiffeuse = {};     // iso → [noms] pour l'affichage
+
       if (args.coiffeuse) {
-        const match = coiffeusesCibles.find(c =>
-          c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
-        );
-        if (match) coiffeusesCibles = [match];
-      }
-
-      // Si pas de coiffeuse spécifique → utiliser Round Robin (une coiffeuse sera assignée par Calendly)
-      if (!args.coiffeuse && roundRobinUris[args.service === "femme" ? "femme" : "homme"]) {
-        const rrUri = roundRobinUris[args.service === "femme" ? "femme" : "homme"];
-        const rrSlots = await getSlots(rrUri, startDate, searchEnd);
-        const slotCoiffeuseRR = {};
-        for (const iso of rrSlots) slotCoiffeuseRR[iso] = ["disponible"];
-        const uniqueRR = Object.keys(slotCoiffeuseRR).sort();
-        const amRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() < 12);
-        const pmRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() >= 12);
-        const spaced = arr => arr.filter((_,i) => i%2===0);
-        let sel = [...spaced(amRR).slice(0,2), ...spaced(pmRR).slice(0,2)];
-        if (sel.length < 2) sel = uniqueRR.slice(0,4);
-        return {
-          disponible: sel.length > 0,
-          slots: sel.map(iso => ({ iso, label: slotToFrench(iso), coiffeuses_dispo: [] })),
-          note: "Présente les créneaux et termine par 'Tu as une préférence?' ou 'Lequel te convient le mieux?' — JAMAIS 'Ça convient?' quand il y a plusieurs options.",
-        };
-      }
-
-      // Fallback Railway si pas de coiffeuses dans le cache
-      if (coiffeusesCibles.length === 0) {
-        const fallbackUri = serviceUri(args.service);
-        if (!fallbackUri) return { error: "Aucun event type configuré pour ce service." };
-        coiffeusesCibles = [{ name: "disponible", eventTypes: { homme: fallbackUri, femme: fallbackUri } }];
-      }
-
-      // Récupérer les slots de toutes les coiffeuses cibles
-      const slotCoiffeuse = {}; // iso -> [noms]
-      for (const c of coiffeusesCibles) {
-        const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
-        if (!cUri) continue;
-        const cSlots = await getSlots(cUri, startDate, searchEnd);
-        for (const iso of cSlots) {
-          if (!slotCoiffeuse[iso]) slotCoiffeuse[iso] = [];
-          slotCoiffeuse[iso].push(c.name);
+        // Coiffeuse spécifique demandée
+        const allC = coiffeuses.filter(c => args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme);
+        const match = allC.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()));
+        if (match) {
+          fetchUri = args.service === "femme" ? match.eventTypes.femme : match.eventTypes.homme;
+          console.log(`[SLOTS] Coiffeuse spécifique: ${match.name} → ${fetchUri}`);
+        } else {
+          console.log(`[SLOTS] Coiffeuse "${args.coiffeuse}" non trouvée — fallback RR`);
+          fetchUri = rrUri;
         }
+      } else {
+        // Pas de préférence → Round Robin, Calendly choisit
+        fetchUri = rrUri;
+        if (fetchUri) console.log(`[SLOTS] Pas de préférence → Round Robin ${fetchUri}`);
       }
-      let slots = Object.keys(slotCoiffeuse).sort();
+
+      // Fallback variable Railway si ni RR ni coiffeuse trouvée
+      if (!fetchUri) fetchUri = serviceUri(args.service);
+      if (!fetchUri) return { error: "Aucun event type configuré pour ce service." };
+
+      // Récupérer les slots
+      const rawSlots = await getSlots(fetchUri, startDate, searchEnd);
+      for (const iso of rawSlots) slotCoiffeuse[iso] = [];  // coiffeuse assignée par Calendly au booking
+      let slots = rawSlots.slice().sort();
 
       // Filtrer STRICTEMENT dans la plage demandée
       if (startDate) {
@@ -897,23 +878,23 @@ async function runTool(name, args, session) {
     // Charger les coiffeuses si pas encore fait
     if (coiffeuses.length === 0) await loadCoiffeuses();
 
-    // Priorité : 1) Round Robin  2) Premier event type individuel dispo  3) Variable Railway
-    let uri = args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme;
+    // Même logique que get_available_slots :
+    // coiffeuse demandée → URI individuel | pas de préférence → Round Robin (Calendly dispatch)
+    const serviceKey = args.service === "femme" ? "femme" : "homme";
+    let uri = null;
 
-    if (!uri) {
-      // Chercher dans les event types individuels — prendre celui de la coiffeuse dispo
-      // Si coiffeuse spécifiée dans args, la prioriser
-      const coiffeuseMatch = args.coiffeuse
-        ? coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()))
-        : null;
-      const cible = coiffeuseMatch || coiffeuses.find(c =>
-        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
-      );
-      uri = cible
-        ? (args.service === "femme" ? cible.eventTypes.femme : cible.eventTypes.homme)
-        : serviceUri(args.service);
-      if (cible) console.log("[BOOKING] URI individuel utilisé:", cible.name);
+    if (args.coiffeuse) {
+      const match = coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()));
+      if (match) {
+        uri = args.service === "femme" ? match.eventTypes.femme : match.eventTypes.homme;
+        console.log(`[BOOKING] Coiffeuse spécifique: ${match.name} → ${uri}`);
+      }
     }
+    if (!uri) {
+      uri = roundRobinUris[serviceKey];
+      if (uri) console.log(`[BOOKING] Round Robin → ${uri} (Calendly dispatch)`);
+    }
+    if (!uri) uri = serviceUri(args.service);  // fallback Railway vars
 
     if (!uri) {
       console.error("[BOOKING] ❌ Aucun URI trouvé — roundRobinUris:", JSON.stringify(roundRobinUris), "coiffeuses:", coiffeuses.length);
