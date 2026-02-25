@@ -2,9 +2,9 @@
  * Salon Coco — Agent téléphonique IA v9
  *
  * Collecte du numéro de téléphone :
- *  1. Marie propose d'envoyer la confirmation au numéro appelant
+ *  1. Hélène propose d'envoyer la confirmation au numéro appelant
  *  2. Si le client confirme → on utilise ce numéro directement
- *  3. Si non → Marie demande le numéro vocalement, le répète chiffre par chiffre,
+ *  3. Si non → Hélène demande le numéro vocalement, le répète chiffre par chiffre,
  *     le client confirme avant d'aller plus loin
  *
  * Plus de redirection DTMF — tout reste dans OpenAI Realtime.
@@ -338,7 +338,7 @@ async function sendSms(to, body) {
 // ─── System prompt ────────────────────────────────────────────────────────────
 function systemPrompt(callerNumber) {
   const callerDisplay = callerNumber ? fmtPhone(callerNumber) : null;
-  return `Tu es Marie, réceptionniste du ${SALON_NAME} à ${SALON_CITY}. Français québécois naturel. Énergie chaleureuse.
+  return `Tu es Hélène, réceptionniste du ${SALON_NAME} à ${SALON_CITY}. Français québécois naturel. Énergie chaleureuse.
 RÈGLE FONDAMENTALE — ATTENDRE LA RÉPONSE :
 - Tu poses UNE question, puis tu te TAIS complètement et tu attends la réponse
 - Tu ne parles PAS tant que le client n'a pas répondu — même si le silence dure plusieurs secondes
@@ -469,13 +469,13 @@ const TOOLS = [
   {
     type: "function",
     name: "format_caller_number",
-    description: "Formate le numéro appelant pour que Marie puisse le lire à voix haute en groupes de chiffres, sans le 1 initial.",
+    description: "Formate le numéro appelant pour que Hélène puisse le lire à voix haute en groupes de chiffres, sans le 1 initial.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
     type: "function",
     name: "normalize_and_confirm_phone",
-    description: "Normalise un numéro de téléphone dicté vocalement et retourne sa version formatée pour que Marie la confirme au client.",
+    description: "Normalise un numéro de téléphone dicté vocalement et retourne sa version formatée pour que Hélène la confirme au client.",
     parameters: {
       type: "object",
       properties: {
