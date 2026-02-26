@@ -976,7 +976,19 @@ async function runTool(name, args, session) {
           new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout")), 15_000)),
         ]);
         console.log(`[BOOKING] ✅ RDV créé et SMS envoyé → ${phone}`);
-        return { success: true, direct: true, phone_display: fmtPhone(phone), email };
+        // Forcer le raccrochage après que Hélène ait dit au revoir (8s)
+        session.shouldHangup = true;
+        session.hangupTimer = setTimeout(() => {
+          console.log("[HANGUP] ✅ Raccrochage automatique post-booking");
+          if (twilioClient && session.twilioCallSid) {
+            twilioClient.calls(session.twilioCallSid)
+              .update({ status: "completed" })
+              .then(() => console.log("[HANGUP] ✅ Appel terminé"))
+              .catch(e => console.error("[HANGUP] ❌", e.message));
+          }
+        }, 8000);
+        return { success: true, direct: true, phone_display: fmtPhone(phone), email,
+          message: "RDV confirmé et SMS envoyé. Dis EXACTEMENT : 'C\'est tout bon! Tu vas recevoir ta confirmation par texto. Bonne journée!' Puis ARRÊTE — l\'appel va se fermer automatiquement." };
       } catch (e) {
         console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
         return { error: `Impossible de créer le rendez-vous : ${e.message}` };
@@ -1003,7 +1015,18 @@ ${link}`
     try {
       await Promise.race([smsPromise, new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout 15s")), 15_000))]);
       console.log(`[BOOKING] ✅ SMS lien envoyé → ${phone}`);
-      return { success: true, phone_display: fmtPhone(phone) };
+      session.shouldHangup = true;
+      session.hangupTimer = setTimeout(() => {
+        console.log("[HANGUP] ✅ Raccrochage automatique post-booking SMS");
+        if (twilioClient && session.twilioCallSid) {
+          twilioClient.calls(session.twilioCallSid)
+            .update({ status: "completed" })
+            .then(() => console.log("[HANGUP] ✅ Appel terminé"))
+            .catch(e => console.error("[HANGUP] ❌", e.message));
+        }
+      }, 8000);
+      return { success: true, phone_display: fmtPhone(phone),
+        message: "SMS envoyé. Dis EXACTEMENT : 'C\'est tout bon! Tu vas recevoir ta confirmation par texto. Bonne journée!' Puis ARRÊTE — l\'appel va se fermer automatiquement." };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
