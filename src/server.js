@@ -598,7 +598,8 @@ const TOOLS = [
         name:       { type: "string", description: "OBLIGATOIRE — nom confirmé du client dans cet appel" },
         phone:      { type: "string", description: "OBLIGATOIRE — numéro validé E.164 ou 10 chiffres" },
         email:      { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
-        coiffeuse:  { type: "string", description: "Prénom de la coiffeuse choisie, si applicable." },
+        coiffeuse:       { type: "string", description: "Prénom de la coiffeuse choisie, si applicable." },
+        event_type_uri:  { type: "string", description: "URI exact de l'event type retourné par get_available_slots pour ce créneau. Toujours passer ce paramètre si disponible — c'est l'URI qui garantit que le booking se fait sur le bon calendrier." },
       },
       required: ["service", "slot_iso", "name", "phone"],
     },
@@ -802,6 +803,15 @@ async function runTool(name, args, session) {
       selected.sort((a, b) => new Date(a) - new Date(b)); // toujours AM avant PM
       if (selected.length < 2) selected = unique.slice(0, 4); // fallback
 
+      // Construire la map iso → URI source (pour booking exact)
+      const slotUriMap = {};
+      for (const c of coiffeusesCibles) {
+        const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
+        if (!cUri) continue;
+        const cSlots = await getSlots(cUri, startDate, searchEnd);
+        for (const iso of cSlots) { if (!slotUriMap[iso]) slotUriMap[iso] = { uri: cUri, coiffeuse: c.name }; }
+      }
+
       console.log(`[SLOTS] ✅ ${selected.length} créneaux (${amSlots.length} AM dispo, ${pmSlots.length} PM dispo)`);
       return {
         disponible: true,
@@ -810,8 +820,9 @@ async function runTool(name, args, session) {
           iso,
           label: slotToFrench(iso),
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
+          event_type_uri: slotUriMap[iso]?.uri || null,
         })),
-        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM. IMPORTANT: quand le client choisit un créneau, passe son event_type_uri dans send_booking_link comme paramètre 'event_type_uri'.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -890,28 +901,38 @@ async function runTool(name, args, session) {
     // Charger les coiffeuses si pas encore fait
     if (coiffeuses.length === 0) await loadCoiffeuses();
 
-    // Priorité : 1) Round Robin  2) Premier event type individuel dispo  3) Variable Railway
-    let uri = args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme;
+    // Priorité : 1) event_type_uri du slot choisi (EXACT)  2) URI coiffeuse  3) Round Robin  4) Railway
+    let uri = args.event_type_uri || null;
+    let uriSource = "slot exact";
 
-    if (!uri) {
-      // Chercher dans les event types individuels — prendre celui de la coiffeuse dispo
-      // Si coiffeuse spécifiée dans args, la prioriser
-      const coiffeuseMatch = args.coiffeuse
-        ? coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()))
-        : null;
-      const cible = coiffeuseMatch || coiffeuses.find(c =>
-        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
-      );
-      uri = cible
-        ? (args.service === "femme" ? cible.eventTypes.femme : cible.eventTypes.homme)
-        : serviceUri(args.service);
-      if (cible) console.log("[BOOKING] URI individuel utilisé:", cible.name);
+    if (!uri && args.coiffeuse) {
+      const match = coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()));
+      if (match) {
+        uri = args.service === "femme" ? match.eventTypes.femme : match.eventTypes.homme;
+        uriSource = "coiffeuse " + match.name;
+      }
     }
 
     if (!uri) {
-      console.error("[BOOKING] ❌ Aucun URI trouvé — roundRobinUris:", JSON.stringify(roundRobinUris), "coiffeuses:", coiffeuses.length);
+      uri = args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme;
+      uriSource = "round robin";
+    }
+
+    if (!uri) {
+      const fallback = coiffeuses.find(c => args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme);
+      if (fallback) {
+        uri = args.service === "femme" ? fallback.eventTypes.femme : fallback.eventTypes.homme;
+        uriSource = "fallback " + fallback.name;
+      }
+    }
+
+    if (!uri) uri = serviceUri(args.service);
+
+    if (!uri) {
+      console.error("[BOOKING] ❌ Aucun URI trouvé");
       return { error: "Service non configuré — aucun event type trouvé." };
     }
+    console.log(`[BOOKING] URI source: ${uriSource} → ${uri.split("/").pop()}`);
     if (!args.slot_iso) return { error: "Créneau manquant." };
     if (!args.name?.trim()) return { error: "Nom manquant." };
 
