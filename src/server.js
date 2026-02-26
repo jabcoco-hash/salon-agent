@@ -593,11 +593,12 @@ const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        service:  { type: "string", enum: ["homme", "femme", "nonbinaire"], description: "OBLIGATOIRE — type de coupe" },
-        slot_iso: { type: "string", description: "OBLIGATOIRE — date ISO du créneau choisi" },
-        name:     { type: "string", description: "OBLIGATOIRE — nom confirmé du client dans cet appel" },
-        phone:    { type: "string", description: "OBLIGATOIRE — numéro validé E.164 ou 10 chiffres" },
-        email:    { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
+        service:    { type: "string", enum: ["homme", "femme", "nonbinaire"], description: "OBLIGATOIRE — type de coupe" },
+        slot_iso:   { type: "string", description: "OBLIGATOIRE — date ISO du créneau choisi" },
+        name:       { type: "string", description: "OBLIGATOIRE — nom confirmé du client dans cet appel" },
+        phone:      { type: "string", description: "OBLIGATOIRE — numéro validé E.164 ou 10 chiffres" },
+        email:      { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
+        coiffeuse:  { type: "string", description: "Prénom de la coiffeuse choisie, si applicable." },
       },
       required: ["service", "slot_iso", "name", "phone"],
     },
@@ -713,7 +714,7 @@ async function runTool(name, args, session) {
         return {
           disponible: sel.length > 0,
           slots: sel.map(iso => ({ iso, label: slotToFrench(iso), coiffeuses_dispo: [] })),
-          note: "Présente les créneaux et termine par 'Tu as une préférence?' ou 'Lequel te convient le mieux?' — JAMAIS 'Ça convient?' quand il y a plusieurs options.",
+          note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM.",
         };
       }
 
@@ -798,6 +799,7 @@ async function runTool(name, args, session) {
       const pmSlots = unique.filter(iso => getHourLocal(iso) >= 12);
       const spaced  = arr => arr.filter((_, i) => i % 2 === 0); // 1 sur 2
       let selected  = [...spaced(amSlots).slice(0, 2), ...spaced(pmSlots).slice(0, 2)];
+      selected.sort((a, b) => new Date(a) - new Date(b)); // toujours AM avant PM
       if (selected.length < 2) selected = unique.slice(0, 4); // fallback
 
       console.log(`[SLOTS] ✅ ${selected.length} créneaux (${amSlots.length} AM dispo, ${pmSlots.length} PM dispo)`);
@@ -809,7 +811,7 @@ async function runTool(name, args, session) {
           label: slotToFrench(iso),
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
         })),
-        note: "Présente les créneaux disponibles et termine par 'Tu as une préférence?' ou 'Lequel te convient le mieux?' — JAMAIS 'Ça convient?' quand il y a plusieurs options.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -851,7 +853,7 @@ async function runTool(name, args, session) {
       phone: normalized,
       formatted: fmtPhone(normalized),
       spoken_groups: spokenGroups,
-      message: `Numéro à lire : "${spokenGroups}". Dis exactement : "Je t'envoie ça au ${spokenGroups}?"`,
+      message: `Dis EXACTEMENT : "Je t'envoie la confirmation par texto au ${spokenGroups} — c'est bien ton cell?"`,
     };
   }
 
@@ -934,6 +936,8 @@ async function runTool(name, args, session) {
 ` +
           `✂️ Service    : ${serviceLabel(args.service)}
 ` +
+          (args.coiffeuse ? `💇 Coiffeuse  : ${args.coiffeuse}
+` : "") +
           `📅 Date/heure : ${slotToFrench(args.slot_iso)}
 ` +
           `📍 Adresse    : ${SALON_ADDRESS}
@@ -1234,9 +1238,14 @@ wss.on("connection", (twilioWs) => {
     console.log("[OAI] Connecté");
     // Ping OpenAI toutes les 10s pour garder le WS vivant
     heartbeat = setInterval(() => {
-      if (oaiWs.readyState === WebSocket.OPEN) oaiWs.ping();
-      else clearInterval(heartbeat);
-    }, 10_000);
+      if (oaiWs.readyState === WebSocket.OPEN) {
+        oaiWs.ping();
+        // Envoyer silence audio pour garder le stream actif
+        oaiWs.send(JSON.stringify({ type: "input_audio_buffer.append", audio: Buffer.alloc(160, 0xFF).toString("base64") }));
+      } else {
+        clearInterval(heartbeat);
+      }
+    }, 8_000);
   });
 
   // Keepalive audio vers Twilio toutes les 10s pour éviter le timeout de stream
