@@ -1350,7 +1350,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "L'appel commence. Dis UNIQUEMENT cette phrase exacte et rien d'autre : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène l\'assistante virtuelle!' Ensuite SILENCE TOTAL. N'ajoute RIEN. N'enchaîne PAS. N'invite PAS le client à parler. Attends qu'il parle de lui-même.",
+          text: "PHRASE OBLIGATOIRE — répète mot pour mot sans rien changer ni ajouter : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène l\'assistante virtuelle! Comment puis-je t\'aider?' — Cette phrase doit être dite EN ENTIER jusqu'au point d'interrogation inclus. Ensuite SILENCE ABSOLU.",
         }],
       },
     }));
