@@ -482,6 +482,8 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
    → Présente les créneaux clairement : "J'ai [jour] à [heure] et [jour] à [heure] — tu as une préférence?"
    → Si une seule option : "J'ai seulement le [jour] à [heure] — ça te convient?"
+   → Si le client demande une heure précise qui N'EST PAS dans les créneaux retournés : dis "Désolée, le [jour] à [heure demandée] est déjà pris. J'ai plutôt [créneaux disponibles] — ça te convient?" Ne jamais proposer silencieusement d'autres plages sans dire que la plage demandée est prise.
+   → Si le client insiste une 2e fois sur la même heure non disponible : dis "Je comprends que ce soit décevant! Je vais te transférer à notre équipe pour s'assurer de bien combler ta demande." → transfer_to_agent.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 3. CONFIRMATION créneau :
@@ -1010,7 +1012,7 @@ async function runTool(name, args, session) {
     const token = crypto.randomBytes(16).toString("hex");
     pending.set(token, {
       expiresAt: Date.now() + 20 * 60 * 1000,
-      payload: { phone, name, service: args.service, eventTypeUri: uri, startTimeIso: args.slot_iso },
+      payload: { phone, name, service: args.service, eventTypeUri: uri, startTimeIso: args.slot_iso, coiffeuse: args.coiffeuse || null },
     });
     console.log(`[BOOKING] Token créé: ${token}`);
 
@@ -1592,7 +1594,7 @@ app.post("/confirm-email/:token", async (req, res) => {
   if (!entry || entry.expiresAt < Date.now())
     return res.status(410).type("text/html").send(html410());
 
-  const { phone, name, service, eventTypeUri, startTimeIso } = entry.payload;
+  const { phone, name, service, eventTypeUri, startTimeIso, coiffeuse } = entry.payload;
   const email = (req.body.email || "").trim().toLowerCase();
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email))
@@ -1613,6 +1615,7 @@ app.post("/confirm-email/:token", async (req, res) => {
       `👤 Nom        : ${name}\n` +
       `✉️ Courriel   : ${email}\n` +
       `✂️ Service    : ${serviceLabel(service)}\n` +
+      (coiffeuse ? `💇 Coiffeuse  : ${coiffeuse}\n` : "") +
       `📅 Date/heure : ${slotToFrench(startTimeIso)}\n` +
       `📍 Adresse    : ${SALON_ADDRESS}\n\n` +
       (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}\n` : "") +
