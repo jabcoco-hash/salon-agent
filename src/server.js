@@ -537,10 +537,9 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 7. ENVOI ET FIN :
    → Appelle send_booking_link.
-   → CLIENT EXISTANT (email connu) : après succès → dis EXACTEMENT : "Ta confirmation est envoyée par texto. Bonne journée!" STOP.
-   → Si tu ne reçois pas la confirmation, n'hésite pas à nous recontacter.
-   → NOUVEAU CLIENT (pas d'email) : après succès → dis EXACTEMENT : "Tu vas recevoir un texto avec un lien pour confirmer ton courriel — ton rendez-vous sera confirmé une fois complété. Bonne journée!" STOP.
-   → Appelle end_call IMMÉDIATEMENT — zéro mot de plus.
+   → CLIENT EXISTANT (email connu) : après succès → dis EXACTEMENT : "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP — zéro mot de plus.
+   → NOUVEAU CLIENT (pas d'email) : après succès → dis EXACTEMENT : "Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!" Puis STOP — zéro mot de plus.
+   → Appelle end_call IMMÉDIATEMENT après avoir dit la phrase — sans délai, sans rien ajouter.
 
 FIN D'APPEL SANS RDV :
    → Client dit "merci", "bonne journée", "c'est tout", "au revoir" SANS avoir réservé :
@@ -1062,7 +1061,7 @@ async function runTool(name, args, session) {
           }
         }, 8000);
         return { success: true, direct: true, phone_display: fmtPhone(phone), email,
-          message: "RDV confirmé. Dis EXACTEMENT cette phrase et RIEN D\'AUTRE : 'Ta confirmation est envoyée par texto. Bonne journée!' STOP. Zéro mot de plus. L\'appel se ferme." };
+          message: "RDV confirmé. Dis EXACTEMENT : 'Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
       } catch (e) {
         console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
         return { error: `Impossible de créer le rendez-vous : ${e.message}` };
@@ -1101,7 +1100,7 @@ ${link}`
         }
       }, 8000);
       return { success: true, phone_display: fmtPhone(phone),
-        message: "SMS envoyé. Dis EXACTEMENT cette phrase et RIEN D\'AUTRE : 'Ta confirmation est envoyée par texto. Bonne journée!' STOP. Zéro mot de plus. L\'appel se ferme." };
+        message: "SMS envoyé. Dis EXACTEMENT : 'Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -1284,7 +1283,7 @@ app.get("/dashboard", (req, res) => {
       ${log.resumeClient?.length ? `
       <div class="resume">
         <div class="resume-title">📝 Ce que le client a dit</div>
-        ${log.resumeClient.map((t,i) => `<div class="resume-line"><span class="rnum">${i+1}</span>${t}</div>`).join("")}
+        ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
       </div>` : ""}
       <div class="events">
         ${log.events.map(e => `
