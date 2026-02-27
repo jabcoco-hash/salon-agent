@@ -697,7 +697,19 @@ async function runTool(name, args, session) {
         const match = coiffeusesCibles.find(c =>
           c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
         );
-        if (match) coiffeusesCibles = [match];
+        if (match) {
+          coiffeusesCibles = [match]; // STRICT : uniquement cette coiffeuse
+        } else {
+          // Coiffeuse demandée introuvable dans le cache → recharger
+          await loadCoiffeuses();
+          const match2 = coiffeuses.find(c =>
+            c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
+          );
+          if (match2) coiffeusesCibles = [match2];
+          else return { disponible: false, message: `${args.coiffeuse} n'est pas disponible pour ce service actuellement.` };
+        }
+        // Avec coiffeuse spécifique : NE PAS utiliser Round Robin
+        // Aller directement chercher ses slots
       }
 
       // Si pas de coiffeuse spécifique → utiliser Round Robin (une coiffeuse sera assignée par Calendly)
@@ -988,7 +1000,7 @@ async function runTool(name, args, session) {
           }
         }, 8000);
         return { success: true, direct: true, phone_display: fmtPhone(phone), email,
-          message: "RDV confirmé et SMS envoyé. Dis EXACTEMENT : 'C\'est tout bon! Tu vas recevoir ta confirmation par texto. Bonne journée!' Puis ARRÊTE — l\'appel va se fermer automatiquement." };
+          message: "RDV confirmé. Dis EXACTEMENT cette phrase et RIEN D\'AUTRE : 'Ta confirmation est envoyée par texto. Bonne journée!' STOP. Zéro mot de plus. L\'appel se ferme." };
       } catch (e) {
         console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
         return { error: `Impossible de créer le rendez-vous : ${e.message}` };
@@ -1026,7 +1038,7 @@ ${link}`
         }
       }, 8000);
       return { success: true, phone_display: fmtPhone(phone),
-        message: "SMS envoyé. Dis EXACTEMENT : 'C\'est tout bon! Tu vas recevoir ta confirmation par texto. Bonne journée!' Puis ARRÊTE — l\'appel va se fermer automatiquement." };
+        message: "SMS envoyé. Dis EXACTEMENT cette phrase et RIEN D\'AUTRE : 'Ta confirmation est envoyée par texto. Bonne journée!' STOP. Zéro mot de plus. L\'appel se ferme." };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -1338,7 +1350,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "L'appel commence. Dis UNIQUEMENT cette phrase exacte : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène l\'assistante virtuelle! Comment puis-je t\'aider?' Puis ARRÊTE-TOI complètement et attends que le client parle.",
+          text: "L'appel commence. Dis UNIQUEMENT cette phrase exacte et rien d'autre : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène l\'assistante virtuelle!' Ensuite SILENCE TOTAL. N'ajoute RIEN. N'enchaîne PAS. N'invite PAS le client à parler. Attends qu'il parle de lui-même.",
         }],
       },
     }));
