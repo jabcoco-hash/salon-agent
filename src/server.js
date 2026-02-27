@@ -64,6 +64,41 @@ function wsBase() { return base().replace(/^https/, "wss").replace(/^http/, "ws"
 // ─── Stores ───────────────────────────────────────────────────────────────────
 const sessions = new Map(); // twilioCallSid → session
 const pending  = new Map(); // token → { expiresAt, payload }
+const callLogs = new Map(); // twilioCallSid → callLog (garde les 200 derniers)
+
+function startCallLog(sid, callerNumber) {
+  const log = {
+    sid,
+    callerNumber,
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    result: "en cours",       // "réservation" | "agent" | "fin normale" | "erreur" | "en cours"
+    demandes: [],             // ["rdv", "prix", "adresse", "heures", ...]
+    coiffeuse: null,
+    service: null,
+    slot: null,
+    clientNom: null,
+    resumeClient: [],         // phrases dites par le client
+    events: [],               // [{ts, type, msg}]
+  };
+  callLogs.set(sid, log);
+  // Garder max 200 appels
+  if (callLogs.size > 200) callLogs.delete(callLogs.keys().next().value);
+  return log;
+}
+
+function logEvent(sid, type, msg) {
+  const log = callLogs.get(sid);
+  if (!log) return;
+  log.events.push({ ts: new Date().toISOString(), type, msg });
+}
+
+function closeCallLog(sid, result) {
+  const log = callLogs.get(sid);
+  if (!log) return;
+  log.endedAt = new Date().toISOString();
+  log.result  = result;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function normalizePhone(raw = "") {
@@ -535,7 +570,7 @@ INTERPRÉTATION NATURELLE — le client ne parle pas comme un robot :
 TRANSFERT À UN HUMAIN — SEULEMENT si le client demande EXPLICITEMENT :
 - Mots clés clairs : "agent", "humain", "parler à quelqu'un", "parler à une personne", "réceptionniste"
 - Frustration répétée (3e fois qu'il dit la même chose sans être compris)
-- Sacres répétés avec ton impatient 
+- Sacres répétés avec ton impatient
 - Si Hélène ne comprend vraiment pas après 2 tentatives → "Désolée, je vais te transférer à l'équipe!" → transfer_to_agent
 - JAMAIS transférer juste parce que la réponse n'est pas le mot exact attendu`;
 }
@@ -657,6 +692,33 @@ const TOOLS = [
 // ─── Exécution des outils ─────────────────────────────────────────────────────
 async function runTool(name, args, session) {
   console.log(`[TOOL] ${name}`, JSON.stringify(args));
+
+  // Logger dans callLogs
+  const sid = session?.twilioCallSid;
+  const cl  = sid ? callLogs.get(sid) : null;
+  if (cl) {
+    if (name === "get_available_slots") {
+      if (args.service) cl.service = args.service;
+      if (args.coiffeuse) cl.coiffeuse = args.coiffeuse;
+      if (!cl.demandes.includes("rdv")) cl.demandes.push("rdv");
+      logEvent(sid, "tool", `Recherche créneaux — service:${args.service}${args.coiffeuse ? " coiffeuse:"+args.coiffeuse : ""}${args.date_debut ? " date:"+args.date_debut : ""}`);
+    } else if (name === "get_salon_info") {
+      if (!cl.demandes.includes(args.topic)) cl.demandes.push(args.topic);
+      logEvent(sid, "tool", `Info salon demandée : ${args.topic}`);
+    } else if (name === "lookup_existing_client") {
+      logEvent(sid, "tool", "Recherche dossier client");
+    } else if (name === "send_booking_link") {
+      cl.service    = args.service || cl.service;
+      cl.coiffeuse  = args.coiffeuse || cl.coiffeuse;
+      cl.slot       = args.slot_iso || null;
+      cl.clientNom  = args.name || null;
+      logEvent(sid, "booking", `Envoi confirmation — ${args.name} | ${args.service} | ${args.slot_iso}`);
+    } else if (name === "end_call") {
+      logEvent(sid, "info", "end_call déclenché");
+    } else if (name === "transfer_to_agent") {
+      logEvent(sid, "warn", "Transfert agent demandé");
+    }
+  }
 
   // Logger les tools lents
   const toolStart = Date.now();
@@ -847,6 +909,7 @@ async function runTool(name, args, session) {
     const client = await lookupClientByPhone(phone);
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
+      if (cl) { cl.clientNom = client.name; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
       return {
         found:  true,
         name:   client.name,
@@ -986,6 +1049,7 @@ async function runTool(name, args, session) {
           new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout")), 15_000)),
         ]);
         console.log(`[BOOKING] ✅ RDV créé et SMS envoyé → ${phone}`);
+        closeCallLog(session?.twilioCallSid, "réservation");
         // Forcer le raccrochage après que Hélène ait dit au revoir (8s)
         session.shouldHangup = true;
         session.hangupTimer = setTimeout(() => {
@@ -1025,6 +1089,7 @@ ${link}`
     try {
       await Promise.race([smsPromise, new Promise((_, rej) => setTimeout(() => rej(new Error("SMS timeout 15s")), 15_000))]);
       console.log(`[BOOKING] ✅ SMS lien envoyé → ${phone}`);
+      closeCallLog(session?.twilioCallSid, "réservation (lien courriel)");
       session.shouldHangup = true;
       session.hangupTimer = setTimeout(() => {
         console.log("[HANGUP] ✅ Raccrochage automatique post-booking SMS");
@@ -1090,6 +1155,7 @@ ${link}`
       return { error: "Trop tôt pour raccrocher — continue la conversation normalement." };
     }
     console.log(`[HANGUP] ✅ Raccrochage programmé (durée: ${Math.round(elapsed/1000)}s)`);
+    closeCallLog(session?.twilioCallSid, "fin normale");
     session.shouldHangup = true;
     // Raccrochage forcé après 7s — assez de temps pour que l'audio finisse
     session.hangupTimer = setTimeout(() => {
@@ -1106,6 +1172,7 @@ ${link}`
 
   if (name === "transfer_to_agent") {
     session.shouldTransfer = true;
+    closeCallLog(session?.twilioCallSid, "agent");
     if (twilioClient && session.twilioCallSid && FALLBACK_NUMBER) {
       setTimeout(async () => {
         try {
@@ -1176,6 +1243,113 @@ app.get("/calendly-info", async (req, res) => {
   } catch(e) {
     res.status(500).send("Erreur: " + e.message);
   }
+});
+
+// ─── Dashboard logs par appel ─────────────────────────────────────────────────
+app.get("/dashboard", (req, res) => {
+  const logs = [...callLogs.values()].reverse(); // plus récent en premier
+
+  const badgeColor = r => ({
+    "réservation": "#22c55e", "réservation (lien courriel)": "#16a34a",
+    "agent": "#f59e0b", "fin normale": "#6c47ff",
+    "erreur": "#ef4444", "en cours": "#3b82f6",
+  }[r] || "#888");
+
+  const fmtTime = iso => {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleString("fr-CA", { timeZone: "America/Toronto",
+      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const duration = log => {
+    if (!log.endedAt) return "en cours...";
+    const s = Math.round((new Date(log.endedAt) - new Date(log.startedAt)) / 1000);
+    return s < 60 ? `${s}s` : `${Math.floor(s/60)}m${s%60}s`;
+  };
+
+  const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🗣️", helene:"🤖" }[t] || "•");
+
+  const rows = logs.map(log => `
+    <details class="call-card">
+      <summary>
+        <span class="badge" style="background:${badgeColor(log.result)}">${log.result}</span>
+        <span class="caller">${log.callerNumber || "inconnu"}</span>
+        <span class="time">${fmtTime(log.startedAt)}</span>
+        <span class="dur">${duration(log)}</span>
+        ${log.clientNom ? `<span class="nom">👤 ${log.clientNom}</span>` : ""}
+        ${log.service ? `<span class="svc">✂️ ${log.service}${log.coiffeuse ? " · "+log.coiffeuse : ""}</span>` : ""}
+        ${log.slot ? `<span class="slot">📅 ${log.slot.replace("T"," ").slice(0,16)}</span>` : ""}
+        ${log.demandes.length ? `<span class="dem">💬 ${log.demandes.join(", ")}</span>` : ""}
+      </summary>
+      ${log.resumeClient?.length ? `
+      <div class="resume">
+        <div class="resume-title">📝 Ce que le client a dit</div>
+        ${log.resumeClient.map((t,i) => `<div class="resume-line"><span class="rnum">${i+1}</span>${t}</div>`).join("")}
+      </div>` : ""}
+      <div class="events">
+        ${log.events.map(e => `
+          <div class="event event-${e.type}">
+            <span class="ets">${fmtTime(e.ts)}</span>
+            <span class="eic">${eventIcon(e.type)}</span>
+            <span class="emsg">${e.msg}</span>
+          </div>`).join("")}
+      </div>
+    </details>`).join("") || "<p class='empty'>Aucun appel enregistré.</p>";
+
+  res.type("text/html").send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dashboard — ${SALON_NAME}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#e2e8f0;min-height:100vh;padding:24px}
+  h1{font-size:1.4rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
+  .sub{color:#64748b;font-size:.85rem;margin-bottom:20px}
+  .stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .stat{background:#1e1e2e;border-radius:10px;padding:12px 18px;min-width:100px;text-align:center}
+  .stat-n{font-size:1.6rem;font-weight:700}
+  .stat-l{font-size:.75rem;color:#64748b;margin-top:2px}
+  .call-card{background:#1e1e2e;border-radius:10px;margin-bottom:10px;overflow:hidden;border:1px solid #2d2d3d}
+  summary{display:flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;flex-wrap:wrap;list-style:none}
+  summary:hover{background:#252535}
+  .badge{padding:2px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:#fff;white-space:nowrap}
+  .caller{font-weight:600;font-size:.95rem}
+  .time{color:#64748b;font-size:.8rem}
+  .dur{color:#94a3b8;font-size:.8rem;background:#2d2d3d;padding:1px 7px;border-radius:10px}
+  .nom,.svc,.slot,.dem{font-size:.8rem;color:#94a3b8;background:#252535;padding:2px 8px;border-radius:8px}
+  .events{padding:12px 16px;border-top:1px solid #2d2d3d;display:flex;flex-direction:column;gap:6px}
+  .event{display:flex;gap:10px;align-items:flex-start;font-size:.82rem}
+  .ets{color:#475569;white-space:nowrap;min-width:110px}
+  .eic{min-width:18px}
+  .emsg{color:#cbd5e1}
+  .event-warn .emsg{color:#fbbf24}
+  .event-error .emsg{color:#f87171}
+  .event-booking .emsg{color:#4ade80}
+  .empty{color:#475569;text-align:center;padding:40px}
+  .refresh{margin-left:auto;background:#6c47ff;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.85rem}
+  .resume{padding:10px 16px;background:#1a1a2e;border-top:1px solid #2d2d3d}
+  .resume-title{font-size:.75rem;color:#6c47ff;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
+  .resume-line{display:flex;gap:8px;font-size:.82rem;color:#94a3b8;padding:3px 0}
+  .rnum{color:#475569;min-width:18px;font-size:.75rem}
+  .event-client .emsg{color:#a5f3fc}
+  .event-helene .emsg{color:#c4b5fd}
+</style>
+</head>
+<body>
+<h1>✂️ ${SALON_NAME} — Dashboard appels</h1>
+<p class="sub">Les ${Math.min(logs.length, 200)} derniers appels · <a href="/dashboard" style="color:#6c47ff">Rafraîchir</a></p>
+<div class="stats">
+  <div class="stat"><div class="stat-n" style="color:#6c47ff">${logs.length}</div><div class="stat-l">Total</div></div>
+  <div class="stat"><div class="stat-n" style="color:#22c55e">${logs.filter(l=>l.result.startsWith("réservation")).length}</div><div class="stat-l">Réservations</div></div>
+  <div class="stat"><div class="stat-n" style="color:#f59e0b">${logs.filter(l=>l.result==="agent").length}</div><div class="stat-l">Agents</div></div>
+  <div class="stat"><div class="stat-n" style="color:#3b82f6">${logs.filter(l=>l.result==="en cours").length}</div><div class="stat-l">En cours</div></div>
+  <div class="stat"><div class="stat-n" style="color:#ef4444">${logs.filter(l=>l.result==="erreur").length}</div><div class="stat-l">Erreurs</div></div>
+</div>
+${rows}
+</body>
+</html>`);
 });
 
 app.get("/oauth/start", (req, res) => {
@@ -1255,13 +1429,17 @@ app.post("/voice", (req, res) => {
   const { CallSid, From } = req.body;
   console.log(`[VOICE] CallSid: ${CallSid} — From: ${From}`);
 
+  const callerNorm = normalizePhone(From || "") || From || "";
   sessions.set(CallSid, {
     twilioCallSid:  CallSid,
-    callerNumber:   normalizePhone(From || "") || From || "",
+    callerNumber:   callerNorm,
     openaiWs:       null,
     streamSid:      null,
     shouldTransfer: false,
+    callStartTime:  Date.now(),
   });
+  startCallLog(CallSid, callerNorm);
+  logEvent(CallSid, "info", `Appel entrant de ${callerNorm}`);
 
   const twiml   = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
@@ -1339,6 +1517,7 @@ wss.on("connection", (twilioWs) => {
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
         temperature:         0.6,
+        input_audio_transcription: { model: "whisper-1" },
       },
     }));
 
@@ -1360,6 +1539,36 @@ wss.on("connection", (twilioWs) => {
     try { ev = JSON.parse(raw); } catch { return; }
 
     switch (ev.type) {
+
+      // Transcription de ce que le CLIENT dit (entrée audio)
+      case "conversation.item.input_audio_transcription.completed": {
+        const txt = ev.transcript?.trim();
+        if (txt && session?.twilioCallSid) {
+          logEvent(session.twilioCallSid, "client", txt);
+          // Détection de sujets libres dans le texte
+          const cl = callLogs.get(session.twilioCallSid);
+          if (cl) {
+            const t = txt.toLowerCase();
+            if ((t.includes("prix") || t.includes("coût") || t.includes("combien") || t.includes("tarif")) && !cl.demandes.includes("prix")) cl.demandes.push("prix");
+            if ((t.includes("adresse") || t.includes("situé") || t.includes("où êtes") || t.includes("localisation")) && !cl.demandes.includes("adresse")) cl.demandes.push("adresse");
+            if ((t.includes("heure") || t.includes("horaire") || t.includes("ouvert") || t.includes("fermé") || t.includes("quelle heure")) && !cl.demandes.includes("heures")) cl.demandes.push("heures");
+            if ((t.includes("annuler") || t.includes("annulation")) && !cl.demandes.includes("annulation")) cl.demandes.push("annulation");
+            if ((t.includes("coloration") || t.includes("teinture") || t.includes("balayage") || t.includes("mise en plis")) && !cl.demandes.includes("service spécialisé")) cl.demandes.push("service spécialisé");
+            if (!cl.resumeClient) cl.resumeClient = [];
+            cl.resumeClient.push(txt);
+          }
+        }
+        break;
+      }
+
+      // Transcription de ce qu'HÉLÈNE dit (sortie audio)
+      case "response.audio_transcript.done": {
+        const txt = ev.transcript?.trim();
+        if (txt && session?.twilioCallSid) {
+          logEvent(session.twilioCallSid, "helene", txt);
+        }
+        break;
+      }
 
       case "response.audio.delta":
         if (ev.delta && twilioWs.readyState === WebSocket.OPEN && streamSid) {
@@ -1482,6 +1691,7 @@ wss.on("connection", (twilioWs) => {
               tool_choice:  "auto",
               modalities:   ["text", "audio"],
               temperature:  0.6,
+              input_audio_transcription: { model: "whisper-1" },
             },
           }));
 
