@@ -596,7 +596,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → LIMITE 90 JOURS : si la date demandée est à plus de 90 jours d'aujourd'hui → dis : "Cette date est un peu loin dans le temps, je vais te transférer à l'équipe qui pourra mieux t'aider!" → transfer_to_agent immédiatement. Ne cherche PAS de créneaux.
    → Si date relative → calcule et confirme avant de chercher.
    → Avant d'appeler get_available_slots, dis immédiatement : "Un instant, je regarde ça!" puis appelle l'outil.
-   → Si l'outil prend plus de 3 secondes, ajoute : "Merci de bien vouloir patienter." — termine cette phrase avant d'enchaîner.
+   → Si l'outil prend plus de 3 secondes, ajoute : "Merci de patienter." — termine cette phrase avant d'enchaîner. NE JAMAIS dire cela pendant ou juste après l'intro.
    → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
    → Présente les créneaux avec la DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh" (ex: "mardi le 3 mars à 13h30"). JAMAIS juste "mardi à 13h30".
@@ -699,7 +699,7 @@ const TOOLS = [
   {
     type: "function",
     name: "lookup_existing_client",
-    description: "Cherche si le numéro appelant est déjà un client connu. N'appelle PAS cet outil si le système t'a déjà fourni les infos client au début de l'appel (le message d'accueil t'indique si un dossier existe). Si tu dois appeler cet outil, dis d'abord : 'Un moment, je vérifie si tu as un dossier avec nous.' Si la recherche prend plus de 2 secondes, ajoute : 'Merci de patienter.'",
+    description: "Cherche si le numéro appelant est déjà un client connu. N'appelle PAS cet outil si le système t'a déjà fourni les infos client en début d'appel. Si tu dois l'appeler (aucune info reçue du système), appelle-le silencieusement sans rien dire avant.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -1916,8 +1916,8 @@ wss.on("connection", (twilioWs) => {
       }
 
       case "response.done": {
-        // Détecter la fin de l'intro (première réponse) et injecter le suivi client
-        if (!session?.introPlayed) {
+        // Détecter la fin de l'intro (première réponse seulement) et injecter le suivi client
+        if (!session?.introPlayed && ev.response?.status === "completed") {
           if (session) session.introPlayed = true;
           const prefetched = session?.prefetchedClient;
 
