@@ -563,7 +563,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Si l'outil prend plus de 3 secondes, ajoute : "Merci de bien vouloir patienter." — termine cette phrase avant d'enchaîner.
    → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
-   → Présente les créneaux avec la DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh" (ex: "mardi le 3 mars à 13h30"). JAMAIS juste "mardi à 13h30".
+   → Présente les créneaux en regroupant par journée. Dis la DATE COMPLÈTE une seule fois par journée, puis enchaîne les heures de cette même journée (ex: "mardi le 2 mars à 9h, 9h30, 10h"; puis "et mercredi le 3 mars à 14h"). Si une journée n'a qu'un seul créneau, dis la date complète + l'heure.
    → Si une coiffeuse a été demandée : commence par "Avec [nom coiffeuse], les disponibilités sont : [liste]"
    → Si aucune coiffeuse : "J'ai [jour le X mois à Hh] et [jour le X mois à Hh] — tu as une préférence?"
    → Si une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
@@ -588,6 +588,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 7. ENVOI ET FIN :
    → Appelle send_booking_link.
+   → Si send_booking_link retourne {error}: excuse-toi brièvement, puis propose immédiatement de choisir un autre créneau. Si le client ne donne pas de nouvelle date/heure, appelle get_available_slots avec offset_semaines: 1 (et la même coiffeuse/service si applicable), puis propose 3-5 créneaux.
    → CLIENT EXISTANT (email connu) : après succès → dis EXACTEMENT : "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP — zéro mot de plus.
    → NOUVEAU CLIENT (pas d'email) : après succès → dis EXACTEMENT : "Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!" Puis STOP — zéro mot de plus.
    → Appelle end_call IMMÉDIATEMENT après avoir dit la phrase — sans délai, sans rien ajouter.
@@ -635,7 +636,7 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux disponibles. NE PAS appeler si la date est à plus de 90 jours — transférer à l'agent. 'le plus tôt possible', 'dès que possible', 'le plus rapidement possible', 'prochaine disponibilité' = PAS de date_debut ni offset (cherche aujourd'hui). Pour dates relatives: 'vendredi prochain' = date ISO du prochain vendredi, 'la semaine prochaine' = date du lundi prochain, 'en mars' = '2026-03-01', 'dans 2 semaines' = offset_semaines:2.",
+    description: "Récupère les créneaux disponibles. NE PAS appeler si la date est à plus de 90 jours — transférer à l'agent. 'le plus tôt possible', 'dès que possible', 'le plus rapidement possible', 'prochaine disponibilité', 'tout de suite', 'maintenant', 'right now', 'live', 'tantôt', 'tento' = PAS de date_debut ni offset (cherche aujourd'hui). Pour dates relatives: 'vendredi prochain' = date ISO du prochain vendredi, 'la semaine prochaine' = date du lundi prochain, 'en mars' = '2026-03-01', 'dans 2 semaines' = offset_semaines:2.",
     parameters: {
       type: "object",
       properties: {
@@ -1091,7 +1092,7 @@ async function runTool(name, args, session) {
         const cancelUrl     = result?.resource?.cancel_url     || "";
         const rescheduleUrl = result?.resource?.reschedule_url || "";
 
-        await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
+        await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
 
         const smsBody =
           `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!
@@ -1190,7 +1191,7 @@ ${link}`
     const name  = args.name?.trim();
     const email = args.email?.trim().toLowerCase() || null;
     if (!name || !phone) return { error: "Nom et téléphone requis." };
-    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
     console.log(`[CONTACT] ✅ Mis à jour: ${name} (${email}) — ${phone}`);
     return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
@@ -2136,7 +2137,7 @@ app.post("/confirm-email/:token", async (req, res) => {
     const rescheduleUrl = result?.resource?.reschedule_url || "";
 
     // Sauvegarder dans Google Contacts si nouveau client
-    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
 
     await sendSms(phone,
       `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!\n\n` +
