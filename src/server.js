@@ -1947,16 +1947,33 @@ wss.on("connection", (twilioWs) => {
               const p2 = session?.prefetchedClient;
               const fu2 = (p2 && p2.name) ? buildFollowUp(p2) : "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
               if (oaiWs?.readyState === WebSocket.OPEN) {
-                oaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: fu2 }] } }));
-                oaiWs.send(JSON.stringify({ type: "response.create" }));
+                oaiWs.send(JSON.stringify({
+                  type: "conversation.item.create",
+                  item: { type: "message", role: "user", content: [{ type: "input_text", text: fu2 + " IMPORTANT: après avoir dit cette phrase, SILENCE TOTAL — ne génère aucune autre phrase, attends que le client parle en premier." }] }
+                }));
+                oaiWs.send(JSON.stringify({
+                  type: "response.create",
+                  response: { instructions: "Dis UNIQUEMENT la phrase demandée ci-dessus, mot pour mot. Ensuite SILENCE ABSOLU — ne dis rien d'autre, attends que le client réponde." }
+                }));
               }
             }, 1500);
             break; // sortir ici — le setTimeout gère la suite
           }
 
           if (followUp && oaiWs?.readyState === WebSocket.OPEN) {
-            oaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: followUp }] } }));
-            oaiWs.send(JSON.stringify({ type: "response.create" }));
+            // Injecter comme instruction système — Hélène dit la phrase puis attend
+            // sans générer de réponse supplémentaire automatiquement
+            oaiWs.send(JSON.stringify({
+              type: "conversation.item.create",
+              item: {
+                type: "message", role: "user",
+                content: [{ type: "input_text", text: followUp + " IMPORTANT: après avoir dit cette phrase, SILENCE TOTAL — ne génère aucune autre phrase, n'ajoute rien, attends que le client parle en premier." }],
+              }
+            }));
+            oaiWs.send(JSON.stringify({
+              type: "response.create",
+              response: { instructions: "Dis UNIQUEMENT la phrase demandée ci-dessus, mot pour mot. Ensuite SILENCE ABSOLU — ne dis rien d'autre, n'anticipe pas, attends que le client réponde." }
+            }));
           }
         }
         break;
