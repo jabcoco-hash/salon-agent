@@ -1151,10 +1151,8 @@ async function runTool(name, args, session) {
         const smsBody =
           `${SALON_NAME}: RDV confirme
 ` +
-          `${slotToShort(args.slot_iso)}
+          `${slotToShort(args.slot_iso)}${args.coiffeuse ? " avec " + args.coiffeuse : ""}
 ` +
-          (args.coiffeuse ? `${args.coiffeuse}
-` : "") +
           (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "");
 
         await Promise.race([
@@ -1930,11 +1928,11 @@ wss.on("connection", (twilioWs) => {
             if (!p || !p.name) return "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
             const prenom = p.name.split(" ")[0];
             if (p.typeCoupe && p.coiffeuse) {
-              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe} avec ${p.coiffeuse}?" puis attends la réponse. Si le client dit OUI (avec ou sans date) → appelle immédiatement get_available_slots avec service="${p.typeCoupe}" ET coiffeuse="${p.coiffeuse}" — TOUJOURS inclure la coiffeuse, même si le client précise une date ou un moment.`;
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe} avec ${p.coiffeuse}?" puis SILENCE ABSOLU — attends la réponse du client sans rien ajouter. Si OUI (avec ou sans date) → get_available_slots service="${p.typeCoupe}" coiffeuse="${p.coiffeuse}". Si NON ou autre chose → adapte-toi à ce que le client dit et réponds selon sa demande.`;
             } else if (p.typeCoupe) {
-              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe}?" puis attends la réponse. Si le client dit OUI (sans préciser de date) → appelle immédiatement get_available_slots avec service="${p.typeCoupe}" sans poser d'autres questions. Si le client dit OUI avec une date ou un moment précis → utilise cette date dans get_available_slots.`;
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe}?" puis SILENCE ABSOLU — attends la réponse. Si OUI → get_available_slots service="${p.typeCoupe}". Si NON ou autre chose → adapte-toi à ce que le client dit.`;
             } else {
-              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous?" puis attends la réponse. Si le client dit OUI → demande type de coupe (homme ou femme) puis coiffeuse.`;
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}?" puis SILENCE ABSOLU — attends la réponse sans rien ajouter.`;
             }
           };
 
@@ -2238,10 +2236,8 @@ app.post("/confirm-email/:token", async (req, res) => {
     await sendSms(phone,
       `${SALON_NAME}: RDV confirme
 ` +
-      `${slotToShort(startTimeIso)}
+      `${slotToShort(startTimeIso)}${coiffeuse ? " avec " + coiffeuse : ""}
 ` +
-      (coiffeuse ? `${coiffeuse}
-` : "") +
       (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "")
     );
 
