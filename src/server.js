@@ -781,8 +781,17 @@ async function runTool(name, args, session) {
       // Calculer la fenêtre de dates
       let startDate = null;
       if (args.date_debut) {
-        startDate = new Date(args.date_debut);
-        if (isNaN(startDate.getTime())) startDate = null;
+        // Interpréter YYYY-MM-DD en heure locale (Toronto) et non UTC
+        // "2026-02-28" + "T06:00:00" = minuit heure locale (UTC-5 en hiver)
+        const tzOffset = new Date().toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE, timeZoneName: "shortOffset" })
+          .match(/GMT([+-]\d+)/)?.[1] || "-5";
+        const offsetHours = -parseInt(tzOffset);
+        const paddedOffset = String(Math.abs(offsetHours)).padStart(2, "0");
+        const sign = offsetHours >= 0 ? "+" : "-";
+        startDate = new Date(`${args.date_debut}T00:00:00${sign}${paddedOffset}:00`);
+        if (isNaN(startDate.getTime())) startDate = new Date(args.date_debut);
+        // Si la date calculée est dans le passé, utiliser maintenant
+        if (startDate < new Date()) startDate = new Date(Date.now() + 60 * 1000);
       }
       if (args.offset_semaines) {
         const base = startDate || new Date();
@@ -1145,7 +1154,7 @@ ${link}`
             .then(() => console.log("[HANGUP] ✅ Appel terminé"))
             .catch(e => console.error("[HANGUP] ❌", e.message));
         }
-      }, 8000);
+      }, 14000); // phrase nouveau client plus longue — 14s
       return { success: true, phone_display: fmtPhone(phone),
         message: "SMS envoyé. Dis EXACTEMENT : 'Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
     } catch (e) {
