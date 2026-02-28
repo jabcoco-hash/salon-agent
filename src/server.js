@@ -117,6 +117,8 @@ function startCallLog(sid, callerNumber) {
     slot: null,
     clientNom: null,
     resumeClient: [],
+    questionsNonRepondues: [],
+    emailDomains: [],
     events: [],
   };
   callLogs.set(sid, log);
@@ -494,6 +496,33 @@ async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiff
   }
 }
 
+// Cherche le prochain RDV Calendly pour un email donné
+async function lookupUpcomingAppointment(email) {
+  try {
+    const r = await fetch(
+      `https://api.calendly.com/scheduled_events?organization=${encodeURIComponent(CALENDLY_ORG_URI)}&invitee_email=${encodeURIComponent(email)}&status=active&count=5&sort=start_time:asc`,
+      { headers: cHeaders() }
+    );
+    const j = await r.json();
+    const events = j.collection || [];
+    if (!events.length) return null;
+    // Prendre le prochain dans le futur
+    const now = new Date();
+    const next = events.find(e => new Date(e.start_time) > now);
+    if (!next) return null;
+    return {
+      start_time:    next.start_time,
+      cancel_url:    next.cancellation?.cancel_url || null,
+      reschedule_url: next.location?.join_url || null, // pas toujours dispo
+      event_uri:     next.uri,
+      status:        next.status,
+    };
+  } catch(e) {
+    console.warn("[CALENDLY] Erreur lookupUpcoming:", e.message);
+    return null;
+  }
+}
+
 async function createInvitee({ uri, startTimeIso, name, email }) {
   const loc  = await getEventLocation(uri);
   const body = {
@@ -611,7 +640,9 @@ RÈGLES :
 - N'invente jamais un nom. Utilise UNIQUEMENT ce que le client dit ou ce qui est dans le dossier.
 - Ne propose jamais liste d'attente ni rappel.
 - INTERDIT : dire "Parfait".
-- ANNULATION / MODIFICATION RDV existant : tu ne peux pas gérer ça. Dis : "Pour modifier ou annuler un rendez-vous existant, je vais te mettre en contact avec l'équipe." → transfer_to_agent.
+- ANNULATION RDV : si le client veut annuler → appelle get_existing_appointment. Si RDV trouvé avec cancel_url → envoie le lien SMS et informe le client. Si pas de lien → transfer_to_agent.
+- MODIFICATION RDV : si le client veut modifier → appelle get_existing_appointment pour confirmer le RDV existant → dis "Pour modifier, utilise le lien dans ton texto de confirmation, ou je te transfère à l'équipe." → transfer_to_agent si besoin.
+- CONFIRMATION RDV : si le client veut confirmer son RDV → appelle get_existing_appointment → lis-lui la date/heure trouvée → dis "Bonne journée!" → end_call.
 - RETARD : si le client dit qu'il sera en retard → dis : "Je vais avertir l'équipe tout de suite." → transfer_to_agent.
 - CADEAU / BON CADEAU : tu ne gères pas les bons cadeaux → transfer_to_agent.
 - CLIENT EN COLÈRE / PLAINTE : si le client exprime une insatisfaction sur un service reçu → dis : "Je suis désolée d'apprendre ça. Je vais te mettre en contact avec l'équipe tout de suite." → transfer_to_agent.
@@ -661,7 +692,7 @@ const TOOLS = [
   {
     type: "function",
     name: "lookup_existing_client",
-    description: "Cherche si le numéro appelant est déjà un client connu. AVANT d'appeler cet outil, dis : 'Un moment, je vérifie si tu as un dossier avec nous.' Puis appelle l'outil. Si la recherche prend plus de 2 secondes, ajoute : 'Merci de patienter.' — termine cette phrase complètement avant de continuer.",
+    description: "Cherche si le numéro appelant est déjà un client connu. N'appelle PAS cet outil si le système t'a déjà fourni les infos client au début de l'appel (le message d'accueil t'indique si un dossier existe). Si tu dois appeler cet outil, dis d'abord : 'Un moment, je vérifie si tu as un dossier avec nous.' Si la recherche prend plus de 2 secondes, ajoute : 'Merci de patienter.'",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -746,9 +777,17 @@ const TOOLS = [
   },
   {
     type: "function",
+    name: "get_existing_appointment",
+    description: "Cherche le prochain rendez-vous Calendly du client appelant, basé sur son email. Appelle si le client parle d'annuler, modifier ou confirmer son RDV existant. Retourne la date/heure et les liens d'annulation/modification.",
+    parameters: { type: "object", properties: {}, required: [] },
+  },
+  {
+    type: "function",
     name: "transfer_to_agent",
     description: "Transfère à un humain. SEULEMENT si: (1) le client demande explicitement un agent/humain, (2) après 2 tentatives Hélène ne comprend toujours pas, (3) service non supporté (coloration etc). NE PAS utiliser parce que la réponse est vague ou imprécise — interpréter naturellement d'abord.",
-    parameters: { type: "object", properties: {}, required: [] },
+    parameters: { type: "object", properties: {
+      raison: { type: "string", enum: ["client", "erreur", "incomprehension", "service_non_supporte"], description: "Raison du transfert. 'client' = client a demandé. 'erreur' = erreur système/booking. 'incomprehension' = Hélène ne comprend pas. 'service_non_supporte' = coloration etc." }
+    }, required: [] },
   },
 ];
 
@@ -1250,9 +1289,36 @@ ${link}`
     return { hanging_up: true, message: "Au revoir dit — appel se termine dans quelques secondes." };
   }
 
+  if (name === "get_existing_appointment") {
+    const phone = session?.callerNumber;
+    // Utiliser email du prefetch si dispo
+    const prefetched = session?.prefetchedClient;
+    const email = prefetched?.email || null;
+    if (!email) {
+      return { found: false, message: "Pas d'email connu pour ce numéro. Demande au client son email pour chercher son rendez-vous." };
+    }
+    const appt = await lookupUpcomingAppointment(email);
+    if (!appt) {
+      return { found: false, message: `Aucun rendez-vous à venir trouvé pour ${email}. Le client n'a peut-être pas de RDV ou il est passé.` };
+    }
+    const dateStr = slotToFrench(appt.start_time);
+    logEvent(session?.twilioCallSid, "tool", `RDV existant trouvé: ${dateStr}`);
+    return {
+      found: true,
+      date_heure: dateStr,
+      start_time_iso: appt.start_time,
+      cancel_url: appt.cancel_url,
+      message: appt.cancel_url
+        ? `RDV trouvé : ${dateStr}. Dis au client : "Tu as un rendez-vous le ${dateStr}. Pour l'annuler, je t'envoie un lien par texto." Puis si client veut annuler → envoie le lien cancel_url par SMS et dis "Lien envoyé! Une fois annulé, veux-tu prendre un nouveau rendez-vous?" Si client veut modifier → dis "Pour modifier, utilise le lien dans ton texto de confirmation original, ou je te transfère à l'équipe." → transfer_to_agent si pas de lien.`
+        : `RDV trouvé : ${dateStr}. Dis : "Tu as un rendez-vous le ${dateStr}. Pour annuler ou modifier, je vais te transférer à l'équipe." → transfer_to_agent.`,
+    };
+  }
+
   if (name === "transfer_to_agent") {
     session.shouldTransfer = true;
-    closeCallLog(session?.twilioCallSid, "agent");
+    // Résultat selon la raison du transfert
+    const transferResult = args.raison === "erreur" ? "erreur" : "agent";
+    closeCallLog(session?.twilioCallSid, transferResult);
     if (twilioClient && session.twilioCallSid && FALLBACK_NUMBER) {
       setTimeout(async () => {
         try {
@@ -1365,6 +1431,16 @@ app.get("/dashboard", (req, res) => {
       <div class="resume">
         <div class="resume-title">📝 Ce que le client a dit</div>
         ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+      </div>` : ""}
+      ${log.questionsNonRepondues?.length ? `
+      <div class="resume" style="border-left:3px solid #f59e0b;background:#1a1200">
+        <div class="resume-title">❓ Questions non répondues</div>
+        ${log.questionsNonRepondues.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+      </div>` : ""}
+      ${log.emailDomains?.length ? `
+      <div class="resume" style="border-left:3px solid #6366f1;background:#0f0020">
+        <div class="resume-title">📧 Domaines email utilisés</div>
+        ${log.emailDomains.map(d => `<div class="resume-line"><span class="rnum">@</span>${d}</div>`).join("")}
       </div>` : ""}
       <div class="events">
         ${log.events.map(e => `
@@ -1815,6 +1891,13 @@ wss.on("connection", (twilioWs) => {
             if ((t.includes("coloration") || t.includes("teinture") || t.includes("balayage") || t.includes("mise en plis")) && !cl.demandes.includes("service spécialisé")) cl.demandes.push("service spécialisé");
             if (!cl.resumeClient) cl.resumeClient = [];
             cl.resumeClient.push(txt);
+            // Capturer domaines email mentionnés par le client
+            const emailMatch = txt.match(/[a-zA-Z0-9._+-]+@([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+            if (emailMatch) {
+              const domain = emailMatch[1].toLowerCase();
+              if (!cl.emailDomains) cl.emailDomains = [];
+              if (!cl.emailDomains.includes(domain)) cl.emailDomains.push(domain);
+            }
           }
         }
         break;
@@ -1825,6 +1908,17 @@ wss.on("connection", (twilioWs) => {
         const txt = ev.transcript?.trim();
         if (txt && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "helene", txt);
+          // Détecter si Hélène dit qu'elle ne peut pas répondre → question non répondue
+          const tl = txt.toLowerCase();
+          if (tl.includes("je ne peux pas répondre") || tl.includes("je ne sais pas") || tl.includes("je peux pas répondre à ça")) {
+            const cl = callLogs.get(session.twilioCallSid);
+            if (cl) {
+              // Trouver la dernière phrase du client comme contexte
+              const lastClient = [...(cl.resumeClient || [])].pop() || "?";
+              if (!cl.questionsNonRepondues) cl.questionsNonRepondues = [];
+              if (!cl.questionsNonRepondues.includes(lastClient)) cl.questionsNonRepondues.push(lastClient);
+            }
+          }
         }
         break;
       }
