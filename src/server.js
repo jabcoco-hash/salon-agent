@@ -15,6 +15,8 @@ import crypto           from "crypto";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import twilio           from "twilio";
+import fs               from "fs";
+import path             from "path";
 
 const app        = express();
 const httpServer = createServer(app);
@@ -22,6 +24,7 @@ const wss        = new WebSocketServer({ server: httpServer });
 
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
+app.use("/static", express.static(path.resolve("src")));
 
 // ─── Environnement ────────────────────────────────────────────────────────────
 const {
@@ -54,6 +57,7 @@ const SALON_CITY       = envStr("SALON_CITY",       "Magog Beach");
 const SALON_ADDRESS    = envStr("SALON_ADDRESS",    "Adresse non configurée");
 const SALON_HOURS      = envStr("SALON_HOURS",      "Heures non configurées");
 const SALON_PRICE_LIST = envStr("SALON_PRICE_LIST", "Prix non configurés");
+const SALON_LOGO_URL   = envStr("SALON_LOGO_URL",   "");
 
 const twilioClient = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
   ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) : null;
@@ -64,7 +68,37 @@ function wsBase() { return base().replace(/^https/, "wss").replace(/^http/, "ws"
 // ─── Stores ───────────────────────────────────────────────────────────────────
 const sessions = new Map(); // twilioCallSid → session
 const pending  = new Map(); // token → { expiresAt, payload }
-const callLogs = new Map(); // twilioCallSid → callLog (garde les 200 derniers)
+// ─── Persistance logs JSON ────────────────────────────────────────────────────
+const LOGS_FILE = path.resolve("call_logs.json");
+const MAX_LOGS  = 500;
+
+const callLogs = new Map(); // twilioCallSid → callLog
+
+// Charger les logs existants au démarrage
+function loadLogsFromDisk() {
+  try {
+    if (fs.existsSync(LOGS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(LOGS_FILE, "utf8"));
+      // data est un tableau trié du plus récent au plus ancien
+      for (const log of data) callLogs.set(log.sid, log);
+      console.log(`[LOGS] ✅ ${data.length} appels chargés depuis call_logs.json`);
+    }
+  } catch(e) {
+    console.error("[LOGS] ❌ Erreur chargement:", e.message);
+  }
+}
+
+// Sauvegarder sur disque — trié du plus récent au plus ancien
+function saveLogsToDisk() {
+  try {
+    const arr = [...callLogs.values()]
+      .sort((a, b) => new Date(b.startedAt) - new Date(a.startedAt))
+      .slice(0, MAX_LOGS);
+    fs.writeFileSync(LOGS_FILE, JSON.stringify(arr, null, 2), "utf8");
+  } catch(e) {
+    console.error("[LOGS] ❌ Erreur sauvegarde:", e.message);
+  }
+}
 
 function startCallLog(sid, callerNumber) {
   const log = {
@@ -72,18 +106,19 @@ function startCallLog(sid, callerNumber) {
     callerNumber,
     startedAt: new Date().toISOString(),
     endedAt: null,
-    result: "en cours",       // "réservation" | "agent" | "fin normale" | "erreur" | "en cours"
-    demandes: [],             // ["rdv", "prix", "adresse", "heures", ...]
+    result: "en cours",
+    demandes: [],
     coiffeuse: null,
     service: null,
     slot: null,
     clientNom: null,
-    resumeClient: [],         // phrases dites par le client
-    events: [],               // [{ts, type, msg}]
+    resumeClient: [],
+    events: [],
   };
   callLogs.set(sid, log);
-  // Garder max 200 appels
-  if (callLogs.size > 200) callLogs.delete(callLogs.keys().next().value);
+  // Garder max en mémoire
+  if (callLogs.size > MAX_LOGS) callLogs.delete(callLogs.keys().next().value);
+  saveLogsToDisk();
   return log;
 }
 
@@ -91,6 +126,7 @@ function logEvent(sid, type, msg) {
   const log = callLogs.get(sid);
   if (!log) return;
   log.events.push({ ts: new Date().toISOString(), type, msg });
+  // Pas de save ici — on save seulement à la fermeture pour éviter I/O excessif
 }
 
 function closeCallLog(sid, result) {
@@ -98,6 +134,7 @@ function closeCallLog(sid, result) {
   if (!log) return;
   log.endedAt = new Date().toISOString();
   log.result  = result;
+  saveLogsToDisk(); // Sauvegarder seulement quand l'appel se termine
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -161,11 +198,18 @@ function spellEmail(email = "") {
 
 function slotToFrench(iso) {
   try {
-    return new Date(iso).toLocaleString("fr-CA", {
+    const d = new Date(iso);
+    const datePart = d.toLocaleString("fr-CA", {
       weekday: "long", month: "long", day: "numeric",
-      hour: "2-digit", minute: "2-digit",
       timeZone: CALENDLY_TIMEZONE,
     });
+    // Heure locale
+    const loc = new Date(d.toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE }));
+    const h = loc.getHours();
+    const m = loc.getMinutes();
+    // Minutes : 00 = omis, sinon en chiffres groupés (15, 30, 45, etc.)
+    const minStr = m === 0 ? "" : ` ${m}`;
+    return `${datePart} à ${h}h${minStr}`;
   } catch { return iso; }
 }
 
@@ -513,6 +557,8 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 2. DISPONIBILITÉS :
    → LIMITE 90 JOURS : si la date demandée est à plus de 90 jours d'aujourd'hui → dis : "Cette date est un peu loin dans le temps, je vais te transférer à l'équipe qui pourra mieux t'aider!" → transfer_to_agent immédiatement. Ne cherche PAS de créneaux.
    → Si date relative → calcule et confirme avant de chercher.
+   → Avant d'appeler get_available_slots, dis immédiatement : "Un instant, je regarde ça!" puis appelle l'outil.
+   → Si l'outil prend plus de 3 secondes, ajoute : "Merci de bien vouloir patienter." — termine cette phrase avant d'enchaîner.
    → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
    → Présente les créneaux clairement : "J'ai [jour] à [heure] et [jour] à [heure] — tu as une préférence?"
@@ -527,7 +573,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 4. DOSSIER :
    → Appelle lookup_existing_client.
-   → Trouvé → dis : "Parfait, j'ai ton dossier [nom]! Je confirme ton rendez-vous avec les informations au dossier." → enchaîne DIRECTEMENT à l'étape 7 sans poser d'autres questions.
+   → Trouvé → dis EXACTEMENT : "J'ai ton dossier [nom]! Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" → termine cette phrase COMPLÈTEMENT → appelle end_call. ZÉRO autre question (pas de nom, pas de numéro, pas de courriel).
    → Non trouvé → demande le nom.
 
 5. NUMÉRO (NOUVEAU CLIENT SEULEMENT) :
@@ -558,6 +604,10 @@ RÈGLES :
 - N'invente jamais un nom. Utilise UNIQUEMENT ce que le client dit ou ce qui est dans le dossier.
 - Ne propose jamais liste d'attente ni rappel.
 - INTERDIT : dire "Parfait".
+- MOT ISOLÉ : si tu reçois UN seul mot sans contexte ("bye", "oui", "non", "ok", un bruit, une lettre, un mot en langue étrangère) → NE PAS réagir comme si c'était une instruction. Attends une phrase complète. Un vrai client va toujours dire au minimum 3-4 mots.
+- SILENCE ou BRUIT : si la transcription ressemble à un bruit, une interjection sans sens, ou un mot seul qui ne fait pas suite à une conversation → ignore-le et attends que le client parle vraiment.
+- QUESTION HORS PORTÉE : si tu ne connais pas la réponse (ex: si c'est près d'un commerce, d'une rue, parking, etc.) → dis EXACTEMENT : "Désolée, je ne peux pas répondre à ça. Est-ce que tu veux que je te transfère à l'équipe?" → Si OUI → transfer_to_agent. Si NON → dis "Comment puis-je t'aider?" SANS te re-présenter.
+- Ne jamais supposer ou inventer une réponse à une question que tu ne connais pas.
 
 INTERPRÉTATION NATURELLE — le client ne parle pas comme un robot :
 - "non peu importe", "n'importe qui", "peu importe", "c'est égal", "pas de préférence", "whatever", "ça m'est égal" → signifie PAS DE PRÉFÉRENCE de coiffeuse → continue sans coiffeuse spécifique
@@ -1307,7 +1357,9 @@ app.get("/dashboard", (req, res) => {
   h1{font-size:1.4rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
   .sub{color:#64748b;font-size:.85rem;margin-bottom:20px}
   .stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
-  .stat{background:#1e1e2e;border-radius:10px;padding:12px 18px;min-width:100px;text-align:center}
+  .stat{background:#1e1e2e;border-radius:10px;padding:12px 18px;min-width:100px;text-align:center;cursor:pointer;transition:all .15s;border:2px solid transparent}
+  .stat:hover{border-color:#6c47ff}
+  .stat.active{border-color:#fff;background:#252535}
   .stat-n{font-size:1.6rem;font-weight:700}
   .stat-l{font-size:.75rem;color:#64748b;margin-top:2px}
   .call-card{background:#1e1e2e;border-radius:10px;margin-bottom:10px;overflow:hidden;border:1px solid #2d2d3d}
@@ -1338,17 +1390,60 @@ app.get("/dashboard", (req, res) => {
 </head>
 <body>
 <h1>✂️ ${SALON_NAME} — Dashboard appels</h1>
-<p class="sub">Les ${Math.min(logs.length, 200)} derniers appels · <a href="/dashboard" style="color:#6c47ff">Rafraîchir</a></p>
+<p class="sub">Les ${logs.length} derniers appels (max ${MAX_LOGS}) · <a href="/dashboard" style="color:#6c47ff">Rafraîchir</a>
+  &nbsp;·&nbsp;
+  <a href="#" onclick="if(confirm('Vider tous les logs?')){fetch('/admin/logs/clear?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}" style="color:#f59e0b">🗑 Vider</a>
+  &nbsp;·&nbsp;
+  <a href="#" onclick="if(confirm('Supprimer le fichier JSON?')){fetch('/admin/logs/delete-file?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}" style="color:#ef4444">❌ Supprimer fichier</a>
+</p>
 <div class="stats">
-  <div class="stat"><div class="stat-n" style="color:#6c47ff">${logs.length}</div><div class="stat-l">Total</div></div>
-  <div class="stat"><div class="stat-n" style="color:#22c55e">${logs.filter(l=>l.result.startsWith("réservation")).length}</div><div class="stat-l">Réservations</div></div>
-  <div class="stat"><div class="stat-n" style="color:#f59e0b">${logs.filter(l=>l.result==="agent").length}</div><div class="stat-l">Agents</div></div>
-  <div class="stat"><div class="stat-n" style="color:#3b82f6">${logs.filter(l=>l.result==="en cours").length}</div><div class="stat-l">En cours</div></div>
-  <div class="stat"><div class="stat-n" style="color:#ef4444">${logs.filter(l=>l.result==="erreur").length}</div><div class="stat-l">Erreurs</div></div>
+  <div class="stat active" data-filter="all" onclick="filter(this,'all')"><div class="stat-n" style="color:#6c47ff">${logs.length}</div><div class="stat-l">Tous</div></div>
+  <div class="stat" data-filter="réservation" onclick="filter(this,'réservation')"><div class="stat-n" style="color:#22c55e">${logs.filter(l=>l.result.startsWith("réservation")).length}</div><div class="stat-l">Réservations</div></div>
+  <div class="stat" data-filter="agent" onclick="filter(this,'agent')"><div class="stat-n" style="color:#f59e0b">${logs.filter(l=>l.result==="agent").length}</div><div class="stat-l">Agents</div></div>
+  <div class="stat" data-filter="en cours" onclick="filter(this,'en cours')"><div class="stat-n" style="color:#3b82f6">${logs.filter(l=>l.result==="en cours").length}</div><div class="stat-l">En cours</div></div>
+  <div class="stat" data-filter="fin normale" onclick="filter(this,'fin normale')"><div class="stat-n" style="color:#6c47ff">${logs.filter(l=>l.result==="fin normale").length}</div><div class="stat-l">Fin normale</div></div>
+  <div class="stat" data-filter="erreur" onclick="filter(this,'erreur')"><div class="stat-n" style="color:#ef4444">${logs.filter(l=>l.result==="erreur").length}</div><div class="stat-l">Erreurs</div></div>
 </div>
-${rows}
+<div id="list">${rows}</div>
+<script>
+function filter(el, val) {
+  document.querySelectorAll('.stat').forEach(s => s.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.call-card').forEach(card => {
+    if (val === 'all') { card.style.display = ''; return; }
+    const badge = card.querySelector('.badge');
+    const result = badge ? badge.textContent.trim() : '';
+    card.style.display = (val === 'réservation' ? result.startsWith('réservation') : result === val) ? '' : 'none';
+  });
+}
+</script>
 </body>
 </html>`);
+});
+
+// ─── Routes admin logs ────────────────────────────────────────────────────────
+// Vider tous les logs (garde le fichier vide)
+app.post("/admin/logs/clear", (req, res) => {
+  const token = req.headers["x-admin-token"] || req.query.token;
+  if (token !== (process.env.ADMIN_TOKEN || "")) return res.status(401).json({ error: "Non autorisé" });
+  callLogs.clear();
+  saveLogsToDisk();
+  console.log("[LOGS] ✅ Tous les logs vidés par admin");
+  res.json({ ok: true, message: "Logs vidés" });
+});
+
+// Supprimer le fichier JSON complètement
+app.post("/admin/logs/delete-file", (req, res) => {
+  const token = req.headers["x-admin-token"] || req.query.token;
+  if (token !== (process.env.ADMIN_TOKEN || "")) return res.status(401).json({ error: "Non autorisé" });
+  try {
+    if (fs.existsSync(LOGS_FILE)) fs.unlinkSync(LOGS_FILE);
+    callLogs.clear();
+    console.log("[LOGS] ✅ Fichier call_logs.json supprimé par admin");
+    res.json({ ok: true, message: "Fichier supprimé" });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/oauth/start", (req, res) => {
@@ -1504,9 +1599,9 @@ wss.on("connection", (twilioWs) => {
       session: {
         turn_detection: {
           type:                "server_vad",
-          threshold:           0.7,    // équilibre : détecte la parole sans réagir au bruit de ligne
-          prefix_padding_ms:   300,
-          silence_duration_ms: 1000,
+          threshold:           0.85,   // élevé : ignore bruits de fond et mots isolés accidentels
+          prefix_padding_ms:   500,
+          silence_duration_ms: 1200,
         },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
@@ -1618,10 +1713,11 @@ wss.on("connection", (twilioWs) => {
         }
 
         if (session?.shouldTransfer) {
+          // Attendre 4s pour laisser Hélène terminer sa phrase avant de transférer
           setTimeout(() => {
             if (twilioWs.readyState === WebSocket.OPEN)
               twilioWs.send(JSON.stringify({ event: "stop", streamSid }));
-          }, 2500);
+          }, 4000);
           pendingTools.delete(ev.call_id);
           break;
         }
@@ -1840,7 +1936,10 @@ app.post("/confirm-email/:token", async (req, res) => {
 const css = `*{box-sizing:border-box;margin:0;padding:0}body{font-family:system-ui,sans-serif;background:#f5f4ff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;border-radius:16px;padding:36px 32px;max-width:460px;width:100%;box-shadow:0 4px 24px rgba(108,71,255,.12)}.logo{font-size:1.6rem;font-weight:700;color:#6c47ff;margin-bottom:4px}.sub{color:#888;font-size:.9rem;margin-bottom:28px}h1{font-size:1.25rem;color:#1a1a1a;margin-bottom:10px}p{color:#555;font-size:.95rem;line-height:1.5;margin-bottom:20px}label{display:block;font-size:.85rem;font-weight:600;color:#333;margin-bottom:6px}input[type=email]{width:100%;padding:13px 14px;font-size:1rem;border:1.5px solid #ddd;border-radius:10px;outline:none}input[type=email]:focus{border-color:#6c47ff}.btn{display:block;width:100%;margin-top:16px;padding:14px;background:#6c47ff;color:#fff;border:none;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer}.btn:hover{background:#5538d4}.err{color:#c0392b;font-size:.88rem;margin-top:8px}.box{background:#f5f4ff;border-radius:10px;padding:16px 18px;margin:20px 0;font-size:.92rem;line-height:1.8}a.lnk{display:block;margin-top:12px;color:#6c47ff;font-size:.9rem;text-decoration:none}.muted{color:#aaa;font-size:.8rem;margin-top:24px}`;
 
 function layout(title, body) {
-  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — ${SALON_NAME}</title><style>${css}</style></head><body><div class="card"><div class="logo">✂️ ${SALON_NAME}</div><div class="sub">Confirmation de rendez-vous</div>${body}</div></body></html>`;
+  const logoHtml = SALON_LOGO_URL
+    ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:60px;max-width:200px;object-fit:contain;margin-bottom:8px">`
+    : `<div class="logo">✂️ ${SALON_NAME}</div>`;
+  return `<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title} — ${SALON_NAME}</title><style>${css}</style></head><body><div class="card">${logoHtml}<div class="sub">Confirmation de rendez-vous</div>${body}</div></body></html>`;
 }
 
 function htmlForm(name, err = "") {
@@ -1886,5 +1985,6 @@ console.warn  = (...a) => _origWarn(Y  + "[AVERT]",  ...a, X);
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, async () => {
   console.log(G + `✅ ${SALON_NAME} — port ${PORT}` + X);
+  loadLogsFromDisk();
   await loadCoiffeuses();
 });
