@@ -1555,6 +1555,11 @@ app.get("/oauth/callback", async (req, res) => {
 });
 
 // ─── Route diagnostic Google Contacts ────────────────────────────────────────
+app.get("/debug-google", async (req, res) => {
+  const phone = req.query.phone || "+15148945221";
+  return res.redirect(`/debug-google/${encodeURIComponent(phone)}`);
+});
+
 app.get("/debug-google/:phone", async (req, res) => {
   const phone = decodeURIComponent(req.params.phone);
   const token = await getGoogleAccessToken();
@@ -1636,20 +1641,66 @@ app.get("/debug-google/:phone", async (req, res) => {
   res.json({ phone, results });
 });
 
-app.get("/debug-env", (req, res) => res.json({
-  SALON_NAME, SALON_CITY, SALON_ADDRESS, SALON_HOURS, SALON_PRICE_LIST,
-  TWILIO_CALLER_ID:     TWILIO_CALLER_ID     ? "✅" : "❌",
-  GOOGLE_CLIENT_ID:     GOOGLE_CLIENT_ID     ? "✅" : "❌",
-  GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET ? "✅" : "❌",
-  GOOGLE_CONNECTED:     googleTokens         ? "✅ token actif" : "❌ visiter /oauth/start",
-  OPENAI_API_KEY:     OPENAI_API_KEY     ? "✅" : "❌",
-  CALENDLY_API_TOKEN: CALENDLY_API_TOKEN ? "✅" : "❌",
-  URIs: {
-    homme:      CALENDLY_EVENT_TYPE_URI_HOMME      ? "✅" : "❌",
-    femme:      CALENDLY_EVENT_TYPE_URI_FEMME      ? "✅" : "❌",
-    nonbinaire: CALENDLY_EVENT_TYPE_URI_NONBINAIRE ? "✅" : "❌",
-  },
-}));
+app.get("/debug-env", async (req, res) => {
+  const base = {
+    SALON_NAME, SALON_CITY, SALON_ADDRESS, SALON_HOURS, SALON_PRICE_LIST,
+    TWILIO_CALLER_ID:     TWILIO_CALLER_ID     ? "✅" : "❌",
+    GOOGLE_CLIENT_ID:     GOOGLE_CLIENT_ID     ? "✅" : "❌",
+    GOOGLE_CLIENT_SECRET: GOOGLE_CLIENT_SECRET ? "✅" : "❌",
+    GOOGLE_CONNECTED:     googleTokens         ? "✅ token actif" : "❌ visiter /oauth/start",
+    OPENAI_API_KEY:     OPENAI_API_KEY     ? "✅" : "❌",
+    CALENDLY_API_TOKEN: CALENDLY_API_TOKEN ? "✅" : "❌",
+    URIs: {
+      homme:      CALENDLY_EVENT_TYPE_URI_HOMME      ? "✅" : "❌",
+      femme:      CALENDLY_EVENT_TYPE_URI_FEMME      ? "✅" : "❌",
+      nonbinaire: CALENDLY_EVENT_TYPE_URI_NONBINAIRE ? "✅" : "❌",
+    },
+  };
+
+  // Test Google si ?phone= fourni
+  const phone = req.query.phone;
+  if (phone) {
+    const token = await getGoogleAccessToken();
+    if (!token) { return res.json({ ...base, google_test: "pas de token" }); }
+    try {
+      // Test 1 : searchContacts
+      const r1 = await fetch(
+        `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers,userDefined`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const j1 = await r1.json();
+      const person0 = j1.results?.[0]?.person;
+      const rn = person0?.resourceName;
+
+      // Test 2 : people.get avec personFields
+      let peopleGet = null;
+      if (rn) {
+        const r2 = await fetch(
+          `https://people.googleapis.com/v1/${rn}?personFields=names,phoneNumbers,userDefined`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        peopleGet = await r2.json();
+      }
+
+      return res.json({
+        ...base,
+        google_test: {
+          phone,
+          search_status: r1.status,
+          search_resultCount: (j1.results||[]).length,
+          search_firstPerson_userDefined: person0?.userDefined || "absent",
+          search_resourceName: rn || null,
+          peopleGet_userDefined: peopleGet?.userDefined || "absent",
+          peopleGet_raw: peopleGet,
+        }
+      });
+    } catch(e) {
+      return res.json({ ...base, google_test: { error: e.message } });
+    }
+  }
+
+  res.json(base);
+});
 
 app.post("/voice", (req, res) => {
   const { CallSid, From } = req.body;
