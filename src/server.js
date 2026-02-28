@@ -394,56 +394,61 @@ async function lookupClientByPhone(phone) {
   if (!token) { console.warn("[LOOKUP] Pas de token Google"); return null; }
 
   try {
-    // Chercher dans tous les contacts par numéro de téléphone
-    const readMask = "names,emailAddresses,phoneNumbers,userDefined";
+    // searchContacts ne retourne PAS userDefined — on fait d'abord la recherche
+    // puis un second appel people.get avec le resourceName pour avoir les champs custom
+    const searchMask = "names,emailAddresses,phoneNumbers";
+    
+    const findInResults = async (results) => {
+      for (const result of results) {
+        const person = result.person;
+        const phones = person.phoneNumbers || [];
+        const match  = phones.find(p => samePhone(p.value || "", phone));
+        if (match) {
+          const name  = person.names?.[0]?.displayName || null;
+          const email = person.emailAddresses?.[0]?.value || null;
+          const resourceName = person.resourceName;
+
+          // Second appel pour récupérer userDefined
+          let typeCoupe = null, coiffeuse = null;
+          try {
+            const rp = await fetch(
+              `https://people.googleapis.com/v1/${resourceName}?personFields=userDefined`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            const jp = await rp.json();
+            const fields = jp.userDefined || [];
+            typeCoupe = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value || null;
+            coiffeuse = fields.find(f => f.key === "SalonCoco-Coiffeuse")?.value || null;
+          } catch (e2) {
+            console.warn("[LOOKUP] Erreur people.get:", e2.message);
+          }
+
+          console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+          return { name, email, found: true, typeCoupe, coiffeuse, resourceName };
+        }
+      }
+      return null;
+    };
+
     const r = await fetch(
       `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(phone)}&readMask=${readMask}`,
+      `?query=${encodeURIComponent(phone)}&readMask=${searchMask}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const j = await r.json();
-    const results = j.results || [];
-
-    const extractSalonFields = (person) => {
-      const fields = person.userDefined || [];
-      const typeCoupe  = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value  || null;
-      const coiffeuse  = fields.find(f => f.key === "SalonCoco-Coiffeuse")?.value  || null;
-      return { typeCoupe, coiffeuse };
-    };
-
-    for (const result of results) {
-      const person = result.person;
-      const phones = person.phoneNumbers || [];
-      const match  = phones.find(p => samePhone(p.value || "", phone));
-      if (match) {
-        const name  = person.names?.[0]?.displayName || null;
-        const email = person.emailAddresses?.[0]?.value || null;
-        const { typeCoupe, coiffeuse } = extractSalonFields(person);
-        console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
-        return { name, email, found: true, typeCoupe, coiffeuse, resourceName: person.resourceName };
-      }
-    }
+    const found1 = await findInResults(j.results || []);
+    if (found1) return found1;
 
     // Essai avec format local (sans +1)
     const local = phone.replace(/^\+1/, "");
     const r2 = await fetch(
       `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(local)}&readMask=${readMask}`,
+      `?query=${encodeURIComponent(local)}&readMask=${searchMask}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const j2 = await r2.json();
-    for (const result of (j2.results || [])) {
-      const person = result.person;
-      const phones = person.phoneNumbers || [];
-      const match  = phones.find(p => samePhone(p.value || "", phone));
-      if (match) {
-        const name  = person.names?.[0]?.displayName || null;
-        const email = person.emailAddresses?.[0]?.value || null;
-        const { typeCoupe, coiffeuse } = extractSalonFields(person);
-        console.log(`[LOOKUP] ✅ Trouvé (local): ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
-        return { name, email, found: true, typeCoupe, coiffeuse, resourceName: person.resourceName };
-      }
-    }
+    const found2 = await findInResults(j2.results || []);
+    if (found2) return found2;
 
     console.log(`[LOOKUP] Nouveau client: ${phone}`);
     return null;
@@ -1727,7 +1732,7 @@ wss.on("connection", (twilioWs) => {
             } else if (p.typeCoupe) {
               return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe}?" puis attends la réponse. Si le client dit OUI (sans préciser de date) → appelle immédiatement get_available_slots avec service="${p.typeCoupe}" sans poser d'autres questions. Si le client dit OUI avec une date ou un moment précis → utilise cette date dans get_available_slots.`;
             } else {
-              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}?" puis attends la réponse.`;
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous?" puis attends la réponse. Si le client dit OUI → demande type de coupe (homme ou femme) puis coiffeuse.`;
             }
           };
 
