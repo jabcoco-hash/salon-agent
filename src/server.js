@@ -204,16 +204,18 @@ function slotToFrench(iso) {
   try {
     const d = new Date(iso);
     const datePart = d.toLocaleString("fr-CA", {
-      weekday: "long", month: "long", day: "numeric",
+      weekday: "long", day: "numeric", month: "long",
       timeZone: CALENDLY_TIMEZONE,
     });
+    // Ex: "mardi 3 mars" → "mardi le 3 mars"
+    const datePartFull = datePart.replace(/^(\w+) (\d+) (.+)$/, "$1 le $2 $3");
     // Heure locale
     const loc = new Date(d.toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE }));
     const h = loc.getHours();
     const m = loc.getMinutes();
     // Minutes : 00 = omis, sinon en chiffres groupés (15, 30, 45, etc.)
-    const minStr = m === 0 ? "" : ` ${m}`;
-    return `${datePart} à ${h}h${minStr}`;
+    const minStr = m === 0 ? "" : String(m).padStart(2, "0");
+    return `${datePartFull} à ${h}h${minStr}`;
   } catch { return iso; }
 }
 
@@ -393,24 +395,32 @@ async function lookupClientByPhone(phone) {
 
   try {
     // Chercher dans tous les contacts par numéro de téléphone
+    const readMask = "names,emailAddresses,phoneNumbers,userDefined";
     const r = await fetch(
       `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers`,
+      `?query=${encodeURIComponent(phone)}&readMask=${readMask}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const j = await r.json();
     const results = j.results || [];
 
+    const extractSalonFields = (person) => {
+      const fields = person.userDefined || [];
+      const typeCoupe  = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value  || null;
+      const coiffeuse  = fields.find(f => f.key === "SalonCoco-Coiffeuse")?.value  || null;
+      return { typeCoupe, coiffeuse };
+    };
+
     for (const result of results) {
       const person = result.person;
-      // Vérifier que le téléphone correspond exactement
       const phones = person.phoneNumbers || [];
       const match  = phones.find(p => samePhone(p.value || "", phone));
       if (match) {
         const name  = person.names?.[0]?.displayName || null;
         const email = person.emailAddresses?.[0]?.value || null;
-        console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email})`);
-        return { name, email, found: true };
+        const { typeCoupe, coiffeuse } = extractSalonFields(person);
+        console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+        return { name, email, found: true, typeCoupe, coiffeuse, resourceName: person.resourceName };
       }
     }
 
@@ -418,7 +428,7 @@ async function lookupClientByPhone(phone) {
     const local = phone.replace(/^\+1/, "");
     const r2 = await fetch(
       `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(local)}&readMask=names,emailAddresses,phoneNumbers`,
+      `?query=${encodeURIComponent(local)}&readMask=${readMask}`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const j2 = await r2.json();
@@ -429,8 +439,9 @@ async function lookupClientByPhone(phone) {
       if (match) {
         const name  = person.names?.[0]?.displayName || null;
         const email = person.emailAddresses?.[0]?.value || null;
-        console.log(`[LOOKUP] ✅ Trouvé (local): ${name} (${email})`);
-        return { name, email, found: true };
+        const { typeCoupe, coiffeuse } = extractSalonFields(person);
+        console.log(`[LOOKUP] ✅ Trouvé (local): ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+        return { name, email, found: true, typeCoupe, coiffeuse, resourceName: person.resourceName };
       }
     }
 
@@ -442,7 +453,7 @@ async function lookupClientByPhone(phone) {
   }
 }
 
-async function saveContactToGoogle({ name, email, phone }) {
+async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiffeuse = null }) {
   const token = await getGoogleAccessToken();
   if (!token) {
     console.warn("[GOOGLE] ❌ saveContact — pas de token. Visite /oauth/start.");
@@ -462,17 +473,21 @@ async function saveContactToGoogle({ name, email, phone }) {
     if (existingPerson) {
       const resourceName = existingPerson.resourceName;
       const existingEmail = existingPerson.emailAddresses?.[0]?.value;
-      if (email && email !== existingEmail) {
-        // Mettre à jour l'email seulement
-        await fetch(`https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=emailAddresses`, {
-          method: "PATCH",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ emailAddresses: [{ value: email }] }),
-        });
-        console.log(`[GOOGLE] ✅ Email mis à jour: ${existingPerson.names?.[0]?.displayName} → ${email}`);
-      } else {
-        console.log(`[GOOGLE] Contact déjà à jour — pas de doublon: ${existingPerson.names?.[0]?.displayName}`);
-      }
+      // Mettre à jour email + champs SalonCoco
+      const updateFields = {};
+      if (email && email !== existingEmail) updateFields.emailAddresses = [{ value: email }];
+      // Toujours écraser SalonCoco-TypeCoupe et SalonCoco-Coiffeuse avec les nouvelles valeurs
+      updateFields.userDefined = [
+        { key: "SalonCoco-TypeCoupe", value: typeCoupe || "" },
+        { key: "SalonCoco-Coiffeuse", value: coiffeuse || "" },
+      ];
+      const updateMask = Object.keys(updateFields).join(",");
+      await fetch(`https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=${updateMask}`, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(updateFields),
+      });
+      console.log(`[GOOGLE] ✅ Contact mis à jour: ${existingPerson.names?.[0]?.displayName} — typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
       return;
     }
 
@@ -484,6 +499,10 @@ async function saveContactToGoogle({ name, email, phone }) {
         names:          [{ displayName: name, givenName: name.split(" ")[0], familyName: name.split(" ").slice(1).join(" ") }],
         emailAddresses: email ? [{ value: email }] : [],
         phoneNumbers:   [{ value: phone, type: "mobile" }],
+        userDefined:    [
+          { key: "SalonCoco-TypeCoupe", value: typeCoupe || "" },
+          { key: "SalonCoco-Coiffeuse", value: coiffeuse || "" },
+        ],
       }),
     });
     const j = await r.json();
@@ -543,8 +562,10 @@ COMPORTEMENT FONDAMENTAL :
 - Tu ne poses qu'UNE seule question à la fois. Tu attends la réponse avant de continuer.
 
 ACCUEIL :
-- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME} à ${SALON_CITY}, je m'appelle Hélène l'assistante virtuelle! Comment puis-je t'aider?"
+- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME} à ${SALON_CITY}, je m'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous. Comment puis-je t'aider?"
+- Cette phrase plus longue donne le temps au système de vérifier ton dossier en arrière-plan.
 - Puis SILENCE COMPLET. Tu attends que le client parle. Rien d'autre.
+- Si le système t'indique qu'un dossier client existe avec des préférences (typeCoupe, coiffeuse) → après ta phrase d'accueil, complète avec : "Comment puis-je t'aider, [Prénom]? Désires-tu prendre rendez-vous pour une [typeCoupe] avec [coiffeuse]?" selon les infos du dossier.
 
 PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une phrase, traite-les toutes, ne repose pas de questions auxquelles il a déjà répondu.
 
@@ -565,9 +586,12 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Si l'outil prend plus de 3 secondes, ajoute : "Merci de bien vouloir patienter." — termine cette phrase avant d'enchaîner.
    → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
-   → Présente les créneaux clairement : "J'ai [jour] à [heure] et [jour] à [heure] — tu as une préférence?"
-   → Si une seule option : "J'ai seulement le [jour] à [heure] — ça te convient?"
+   → Présente les créneaux avec la DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh" (ex: "mardi le 3 mars à 13h30"). JAMAIS juste "mardi à 13h30".
+   → Si une coiffeuse a été demandée : commence par "Avec [nom coiffeuse], les disponibilités sont : [liste]"
+   → Si aucune coiffeuse : "J'ai [jour le X mois à Hh] et [jour le X mois à Hh] — tu as une préférence?"
+   → Si une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
    → Si le client demande une heure précise qui N'EST PAS dans les créneaux retournés : dis "Désolée, le [jour] à [heure demandée] est déjà pris. J'ai plutôt [créneaux disponibles] — ça te convient?" Ne jamais proposer silencieusement d'autres plages sans dire que la plage demandée est prise.
+   → Si le client demande quelles coiffeuses sont disponibles (ex: "c'est qui les coiffeuses?", "qui est disponible?") : indique les noms présents dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. Dis simplement "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends avec les mêmes créneaux.
    → Si le client insiste une 2e fois sur la même heure non disponible : dis "Je comprends que ce soit décevant! Je vais te transférer à notre équipe pour s'assurer de bien combler ta demande." → transfer_to_agent.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
@@ -956,7 +980,7 @@ async function runTool(name, args, session) {
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
           event_type_uri: slotUriMap[iso]?.uri || null,
         })),
-        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM. IMPORTANT: quand le client choisit un créneau, passe son event_type_uri dans send_booking_link comme paramètre 'event_type_uri'.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec la DATE COMPLÈTE (ex: 'mardi le 3 mars à 13h30'). Si une coiffeuse a été demandée, commence par 'Avec [prénom coiffeuse], les disponibilités sont :' suivi des créneaux. Si aucune coiffeuse, commence par 'Les disponibilités sont :'. AM avant PM. IMPORTANT: quand le client choisit un créneau, passe son event_type_uri dans send_booking_link.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -967,17 +991,28 @@ async function runTool(name, args, session) {
   if (name === "lookup_existing_client") {
     const phone = session?.callerNumber;
     if (!phone) { clearKeepalive(); return { found: false, message: "Pas de numéro appelant disponible." }; }
-    console.log(`[LOOKUP] Recherche client pour ${phone}`);
-    const client = await lookupClientByPhone(phone);
+    // Utiliser le résultat prefetch si déjà disponible (lookup lancé pendant l'accueil)
+    let client = session?.prefetchedClient;
+    if (client === undefined) {
+      console.log(`[LOOKUP] Recherche client pour ${phone}`);
+      client = await lookupClientByPhone(phone);
+    } else {
+      console.log(`[LOOKUP] Utilisation prefetch pour ${phone}: ${client?.name || "nouveau"}`);
+    }
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
       if (cl) { cl.clientNom = client.name; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
+      const prefSuggestion = client.typeCoupe || client.coiffeuse
+        ? ` Désires-tu prendre rendez-vous pour une ${client.typeCoupe || "coupe"}${client.coiffeuse ? " avec " + client.coiffeuse : ""}?`
+        : "";
       return {
-        found:     true,
-        name:      client.name,
-        email:     client.email || null,
-        has_email: !!client.email,
-        message:   `Dossier trouvé : ${client.name}. Dis EXACTEMENT : "J'ai ton dossier ${client.name}! Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis appelle end_call IMMÉDIATEMENT. ZÉRO autre question.`,
+        found:      true,
+        name:       client.name,
+        email:      client.email || null,
+        has_email:  !!client.email,
+        typeCoupe:  client.typeCoupe || null,
+        coiffeuse:  client.coiffeuse || null,
+        message:    `Dossier trouvé : ${client.name}.${prefSuggestion ? ` Complète ton accueil avec : "Comment puis-je t'aider, ${client.name.split(" ")[0]}?${prefSuggestion}"` : ` Dis : "Comment puis-je t'aider, ${client.name.split(" ")[0]}?"`}. Attends sa réponse.`,
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
@@ -1079,7 +1114,7 @@ async function runTool(name, args, session) {
         const cancelUrl     = result?.resource?.cancel_url     || "";
         const rescheduleUrl = result?.resource?.reschedule_url || "";
 
-        await saveContactToGoogle({ name, email, phone });
+        await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
 
         const smsBody =
           `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!
@@ -1178,7 +1213,7 @@ ${link}`
     const name  = args.name?.trim();
     const email = args.email?.trim().toLowerCase() || null;
     if (!name || !phone) return { error: "Nom et téléphone requis." };
-    await saveContactToGoogle({ name, email, phone });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
     console.log(`[CONTACT] ✅ Mis à jour: ${name} (${email}) — ${phone}`);
     return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
@@ -1625,13 +1660,14 @@ wss.on("connection", (twilioWs) => {
       },
     }));
 
+    // Lookup déjà lancé dès le start Twilio — prefetchedClient sera disponible
     oaiWs.send(JSON.stringify({
       type: "conversation.item.create",
       item: {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "PHRASE OBLIGATOIRE — répète mot pour mot sans rien changer ni ajouter : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène l\'assistante virtuelle! Comment puis-je t\'aider?' — Cette phrase doit être dite EN ENTIER jusqu'au point d'interrogation inclus. Ensuite SILENCE ABSOLU.",
+          text: "PHRASE OBLIGATOIRE — dis mot pour mot : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous. Comment puis-je t\'aider?' — Dis cette phrase EN ENTIER. Ensuite SILENCE ABSOLU — attends les instructions du système sur le dossier client avant de continuer.",
         }],
       },
     }));
@@ -1859,6 +1895,15 @@ wss.on("connection", (twilioWs) => {
 
         console.log(`[Twilio] Stream — sid: ${sid} — caller: ${session.callerNumber}`);
 
+        // ⚡ Lookup Google immédiat dès réception du stream — avant même que OAI soit prêt
+        const _callerNum = session.callerNumber;
+        if (_callerNum) {
+          lookupClientByPhone(_callerNum).then(info => {
+            if (session) session.prefetchedClient = info ?? false; // false = nouveau client confirmé
+            console.log(`[LOOKUP] Prefetch terminé: ${info ? info.name : "nouveau client"}`);
+          }).catch(() => { if (session) session.prefetchedClient = false; });
+        }
+
         // Démarrer le keepalive audio Twilio
         startTwilioKeepalive();
 
@@ -1920,7 +1965,7 @@ app.post("/confirm-email/:token", async (req, res) => {
     const rescheduleUrl = result?.resource?.reschedule_url || "";
 
     // Sauvegarder dans Google Contacts si nouveau client
-    await saveContactToGoogle({ name, email, phone });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
 
     await sendSms(phone,
       `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!\n\n` +
