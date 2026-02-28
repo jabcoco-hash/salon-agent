@@ -647,7 +647,7 @@ const TOOLS = [
   {
     type: "function",
     name: "lookup_existing_client",
-    description: "Cherche si le numéro appelant est déjà un client connu dans Calendly. Appelle au début si on a un numéro appelant, AVANT de demander le nom.",
+    description: "Cherche si le numéro appelant est déjà un client connu. AVANT d'appeler cet outil, dis : 'Un moment, je vérifie si tu as un dossier avec nous.' Puis appelle l'outil. Si la recherche prend plus de 2 secondes, ajoute : 'Merci de patienter.' — termine cette phrase complètement avant de continuer.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -960,14 +960,11 @@ async function runTool(name, args, session) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
       if (cl) { cl.clientNom = client.name; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
       return {
-        found:  true,
-        name:   client.name,
-        email:  client.email || null,
+        found:     true,
+        name:      client.name,
+        email:     client.email || null,
         has_email: !!client.email,
-        spelled_email: client.email ? spellEmail(client.email) : null,
-        message: client.email
-          ? `Client trouvé : ${client.name}. Dis : "J'ai un dossier au nom de ${client.name} — c'est bien toi?" Attends OUI. Ensuite épelle le courriel : "J'ai le courriel ${spellEmail(client.email)} dans le dossier — c'est toujours bon?"`
-          : `Client trouvé : ${client.name}, pas de courriel enregistré. Dis : "J'ai un dossier au nom de ${client.name} — c'est bien toi?" Attends OUI.`,
+        message:   `Dossier trouvé : ${client.name}. Dis EXACTEMENT : "J'ai ton dossier ${client.name}! Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis appelle end_call IMMÉDIATEMENT. ZÉRO autre question.`,
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
