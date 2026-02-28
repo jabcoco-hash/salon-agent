@@ -563,9 +563,10 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Si l'outil prend plus de 3 secondes, ajoute : "Merci de bien vouloir patienter." — termine cette phrase avant d'enchaîner.
    → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
-   → Présente les créneaux en regroupant par journée. Dis la DATE COMPLÈTE une seule fois par journée, puis enchaîne les heures de cette même journée (ex: "mardi le 2 mars à 9h, 9h30, 10h"; puis "et mercredi le 3 mars à 14h"). Si une journée n'a qu'un seul créneau, dis la date complète + l'heure.
-   → Si une coiffeuse a été demandée : commence par "Avec [nom coiffeuse], les disponibilités sont : [liste]"
-   → Si aucune coiffeuse : "J'ai [jour le X mois à Hh] et [jour le X mois à Hh] — tu as une préférence?"
+   → Présente les créneaux avec la DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh" (ex: "mardi le 3 mars à 13h30"). JAMAIS juste "mardi à 13h30".
+   → REGROUPEMENT PAR JOURNÉE : si plusieurs créneaux sont le même jour, dis la date UNE SEULE FOIS puis liste les heures. Ex: "mardi le 3 mars à 9h, 9h30 et 10h, et mercredi le 4 mars à 14h".
+   → Si une coiffeuse a été demandée : commence par "Avec [nom coiffeuse], les disponibilités sont : [liste groupée]"
+   → Si aucune coiffeuse : "J'ai [liste groupée par journée] — tu as une préférence?"
    → Si une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
    → Si le client demande une heure précise qui N'EST PAS dans les créneaux retournés : dis "Désolée, le [jour] à [heure demandée] est déjà pris. J'ai plutôt [créneaux disponibles] — ça te convient?" Ne jamais proposer silencieusement d'autres plages sans dire que la plage demandée est prise.
    → Si le client demande quelles coiffeuses sont disponibles (ex: "c'est qui les coiffeuses?", "qui est disponible?") : indique les noms présents dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. Dis simplement "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends avec les mêmes créneaux.
@@ -577,16 +578,10 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Attends OUI avant de continuer.
 
 4. DOSSIER :
-   → IMPORTANT : Si le système t'a déjà confirmé un client connu au début de l'appel (ex: message "Dossier trouvé" / nom et email déjà fournis / ou un résultat lookup_existing_client {found:true} plus tôt), ALORS le dossier est déjà chargé :
-      - NE DIS PAS "Un moment..." / "Merci de patienter"
-      - NE RAPPELLE PAS lookup_existing_client
-      - Passe DIRECTEMENT à l'étape 7 (ENVOI ET FIN) après la confirmation du créneau.
-   → Sinon (dossier pas encore vérifié dans cet appel) :
-      - Dis : "Un moment, je vérifie si tu as un dossier avec nous."
-      - Puis appelle lookup_existing_client.
-      - Trouvé → confirme brièvement : "Parfait, j'ai ton dossier [nom]." puis passe DIRECTEMENT à l'étape 7 (ENVOI ET FIN). ZÉRO autre question (pas de nom, pas de numéro, pas de courriel).
-      - Non trouvé → demande le nom.
-
+   → Si le système t'a déjà fourni les infos du client au début de l'appel (prefetch) → NE PAS appeler lookup_existing_client. Utilise directement l'email et le nom déjà connus → passe à l'étape 7.
+   → Sinon → appelle lookup_existing_client.
+   → Trouvé → passe à l'étape 7 directement. ZÉRO question supplémentaire (pas de nom, pas de numéro, pas de courriel).
+   → Non trouvé → demande le nom.
 
 5. NUMÉRO (NOUVEAU CLIENT SEULEMENT) :
    → Demande le numéro de cellulaire : "Quel est ton numéro de cellulaire?" → attends la réponse → appelle normalize_and_confirm_phone → confirme : "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
@@ -595,7 +590,6 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 7. ENVOI ET FIN :
    → Appelle send_booking_link.
-   → Si send_booking_link retourne {error}: excuse-toi brièvement, puis propose immédiatement de choisir un autre créneau. Si le client ne donne pas de nouvelle date/heure, appelle get_available_slots avec offset_semaines: 1 (et la même coiffeuse/service si applicable), puis propose 3-5 créneaux.
    → CLIENT EXISTANT (email connu) : après succès → dis EXACTEMENT : "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP — zéro mot de plus.
    → NOUVEAU CLIENT (pas d'email) : après succès → dis EXACTEMENT : "Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!" Puis STOP — zéro mot de plus.
    → Appelle end_call IMMÉDIATEMENT après avoir dit la phrase — sans délai, sans rien ajouter.
@@ -617,6 +611,13 @@ RÈGLES :
 - N'invente jamais un nom. Utilise UNIQUEMENT ce que le client dit ou ce qui est dans le dossier.
 - Ne propose jamais liste d'attente ni rappel.
 - INTERDIT : dire "Parfait".
+- ANNULATION / MODIFICATION RDV existant : tu ne peux pas gérer ça. Dis : "Pour modifier ou annuler un rendez-vous existant, je vais te mettre en contact avec l'équipe." → transfer_to_agent.
+- RETARD : si le client dit qu'il sera en retard → dis : "Je vais avertir l'équipe tout de suite." → transfer_to_agent.
+- CADEAU / BON CADEAU : tu ne gères pas les bons cadeaux → transfer_to_agent.
+- CLIENT EN COLÈRE / PLAINTE : si le client exprime une insatisfaction sur un service reçu → dis : "Je suis désolée d'apprendre ça. Je vais te mettre en contact avec l'équipe tout de suite." → transfer_to_agent.
+- RAPPEL DE CONFIRMATION : si le client appelle pour confirmer ou reconfirmer un RDV existant → dis : "Ton rendez-vous est bien noté dans notre système. À bientôt!" → end_call.
+- APRÈS CHOIX DE CRÉNEAU : ne re-demande JAMAIS le service ou la coiffeuse si tu les connais déjà — tu les as en mémoire depuis le début de la conversation.
+- NE JAMAIS dire "je vais vérifier si tu as un dossier" ou "je vais regarder si tu as un compte" si le dossier a déjà été chargé au début de l'appel.
 - MOT ISOLÉ : si tu reçois UN seul mot sans contexte ("bye", "oui", "non", "ok", un bruit, une lettre, un mot en langue étrangère) → NE PAS réagir comme si c'était une instruction. Attends une phrase complète. Un vrai client va toujours dire au minimum 3-4 mots.
 - SILENCE ou BRUIT : si la transcription ressemble à un bruit, une interjection sans sens, ou un mot seul qui ne fait pas suite à une conversation → ignore-le et attends que le client parle vraiment.
 - QUESTION HORS PORTÉE : si tu ne connais pas la réponse (ex: si c'est près d'un commerce, d'une rue, parking, etc.) → dis EXACTEMENT : "Désolée, je ne peux pas répondre à ça. Est-ce que tu veux que je te transfère à l'équipe?" → Si OUI → transfer_to_agent. Si NON → dis "Comment puis-je t'aider?" SANS te re-présenter.
@@ -643,7 +644,7 @@ const TOOLS = [
   {
     type: "function",
     name: "get_available_slots",
-    description: "Récupère les créneaux disponibles. NE PAS appeler si la date est à plus de 90 jours — transférer à l'agent. 'le plus tôt possible', 'dès que possible', 'le plus rapidement possible', 'prochaine disponibilité', 'tout de suite', 'maintenant', 'right now', 'live', 'tantôt', 'tento' = PAS de date_debut ni offset (cherche aujourd'hui). Pour dates relatives: 'vendredi prochain' = date ISO du prochain vendredi, 'la semaine prochaine' = date du lundi prochain, 'en mars' = '2026-03-01', 'dans 2 semaines' = offset_semaines:2.",
+    description: "Récupère les créneaux disponibles. NE PAS appeler si la date est à plus de 90 jours — transférer à l'agent. 'le plus tôt possible', 'dès que possible', 'le plus rapidement possible', 'prochaine disponibilité', 'right now', 'tout de suite', 'tento', 'maintenant', 'live', 'asap' = PAS de date_debut ni offset (cherche AUJOURD'HUI — même journée). Pour dates relatives: 'vendredi prochain' = date ISO du prochain vendredi, 'la semaine prochaine' = date du lundi prochain, 'en mars' = '2026-03-01', 'dans 2 semaines' = offset_semaines:2.",
     parameters: {
       type: "object",
       properties: {
@@ -660,7 +661,7 @@ const TOOLS = [
   {
     type: "function",
     name: "lookup_existing_client",
-    description: "Cherche si le numéro appelant est déjà un client connu. N'appelle cet outil QUE si le dossier n'a pas déjà été confirmé plus tôt dans cet appel. Si tu dois l'appeler (dossier inconnu dans cet appel), dis : 'Un moment, je vérifie si tu as un dossier avec nous.' puis appelle l'outil. (Ne dis pas 'Merci de patienter' si le dossier est déjà connu.)",
+    description: "Cherche si le numéro appelant est déjà un client connu. AVANT d'appeler cet outil, dis : 'Un moment, je vérifie si tu as un dossier avec nous.' Puis appelle l'outil. Si la recherche prend plus de 2 secondes, ajoute : 'Merci de patienter.' — termine cette phrase complètement avant de continuer.",
     parameters: { type: "object", properties: {}, required: [] },
   },
   {
@@ -1198,7 +1199,7 @@ ${link}`
     const name  = args.name?.trim();
     const email = args.email?.trim().toLowerCase() || null;
     if (!name || !phone) return { error: "Nom et téléphone requis." };
-    await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
     console.log(`[CONTACT] ✅ Mis à jour: ${name} (${email}) — ${phone}`);
     return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
@@ -2144,7 +2145,7 @@ app.post("/confirm-email/:token", async (req, res) => {
     const rescheduleUrl = result?.resource?.reschedule_url || "";
 
     // Sauvegarder dans Google Contacts si nouveau client
-    await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
 
     await sendSms(phone,
       `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!\n\n` +
