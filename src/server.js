@@ -1718,16 +1718,21 @@ wss.on("connection", (twilioWs) => {
 
           let followUp = null;
 
-          if (prefetched && prefetched.name) {
-            // Client connu — construire la suggestion personnalisée
-            const prenom = prefetched.name.split(" ")[0];
-            if (prefetched.typeCoupe && prefetched.coiffeuse) {
-              followUp = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${prefetched.typeCoupe} avec ${prefetched.coiffeuse}, ${prenom}?" puis attends la réponse.`;
-            } else if (prefetched.typeCoupe) {
-              followUp = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${prefetched.typeCoupe}, ${prenom}?" puis attends la réponse.`;
+          // Construit le message de suivi selon le profil client
+          const buildFollowUp = (p) => {
+            if (!p || !p.name) return "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
+            const prenom = p.name.split(" ")[0];
+            if (p.typeCoupe && p.coiffeuse) {
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe} avec ${p.coiffeuse}?" puis attends la réponse. Si le client dit OUI (avec ou sans date) → appelle immédiatement get_available_slots avec service="${p.typeCoupe}" ET coiffeuse="${p.coiffeuse}" — TOUJOURS inclure la coiffeuse, même si le client précise une date ou un moment.`;
+            } else if (p.typeCoupe) {
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}? Désires-tu prendre rendez-vous pour une ${p.typeCoupe}?" puis attends la réponse. Si le client dit OUI (sans préciser de date) → appelle immédiatement get_available_slots avec service="${p.typeCoupe}" sans poser d'autres questions. Si le client dit OUI avec une date ou un moment précis → utilise cette date dans get_available_slots.`;
             } else {
-              followUp = `Dis EXACTEMENT : "Comment puis-je t'aider, ${prenom}?" puis attends la réponse.`;
+              return `Dis EXACTEMENT : "Comment puis-je t'aider aujourd'hui, ${prenom}?" puis attends la réponse.`;
             }
+          };
+
+          if (prefetched && prefetched.name) {
+            followUp = buildFollowUp(prefetched);
           } else if (prefetched === false) {
             // Nouveau client confirmé
             followUp = "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
@@ -1735,19 +1740,7 @@ wss.on("connection", (twilioWs) => {
             // Lookup pas encore terminé — attendre 1.5s puis réessayer
             setTimeout(() => {
               const p2 = session?.prefetchedClient;
-              let fu2;
-              if (p2 && p2.name) {
-                const prenom = p2.name.split(" ")[0];
-                if (p2.typeCoupe && p2.coiffeuse) {
-                  fu2 = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${p2.typeCoupe} avec ${p2.coiffeuse}, ${prenom}?" puis attends la réponse.`;
-                } else if (p2.typeCoupe) {
-                  fu2 = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${p2.typeCoupe}, ${prenom}?" puis attends la réponse.`;
-                } else {
-                  fu2 = `Dis EXACTEMENT : "Comment puis-je t'aider, ${prenom}?" puis attends la réponse.`;
-                }
-              } else {
-                fu2 = "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
-              }
+              const fu2 = (p2 && p2.name) ? buildFollowUp(p2) : "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
               if (oaiWs?.readyState === WebSocket.OPEN) {
                 oaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: fu2 }] } }));
                 oaiWs.send(JSON.stringify({ type: "response.create" }));
