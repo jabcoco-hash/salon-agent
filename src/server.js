@@ -394,61 +394,33 @@ async function lookupClientByPhone(phone) {
   if (!token) { console.warn("[LOOKUP] Pas de token Google"); return null; }
 
   try {
-    // searchContacts ne retourne PAS userDefined — on fait d'abord la recherche
-    // puis un second appel people.get avec le resourceName pour avoir les champs custom
-    const searchMask = "names,emailAddresses,phoneNumbers";
-    
-    const findInResults = async (results) => {
-      for (const result of results) {
-        const person = result.person;
-        const phones = person.phoneNumbers || [];
-        const match  = phones.find(p => samePhone(p.value || "", phone));
-        if (match) {
-          const name  = person.names?.[0]?.displayName || null;
-          const email = person.emailAddresses?.[0]?.value || null;
-          const resourceName = person.resourceName;
-
-          // Second appel pour récupérer userDefined
-          let typeCoupe = null, coiffeuse = null;
-          try {
-            const rp = await fetch(
-              `https://people.googleapis.com/v1/${resourceName}?personFields=userDefined`,
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-            const jp = await rp.json();
-            const fields = jp.userDefined || [];
-            typeCoupe = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value || null;
-            coiffeuse = fields.find(f => f.key === "SalonCoco-Coiffeuse")?.value || null;
-          } catch (e2) {
-            console.warn("[LOOKUP] Erreur people.get:", e2.message);
-          }
-
-          console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
-          return { name, email, found: true, typeCoupe, coiffeuse, resourceName };
-        }
-      }
-      return null;
-    };
-
+    // searchContacts ne trouve pas le contact — on utilise listConnections à la place
+    // Les champs userDefined sont stockés avec clé/valeur inversés dans Google Contacts :
+    // key="Coupe Homme", value="SalonCoco-TypeCoupe" (inverse de ce qu'on écrit)
     const r = await fetch(
-      `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(phone)}&readMask=${searchMask}`,
+      `https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers,userDefined&pageSize=1000`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const j = await r.json();
-    const found1 = await findInResults(j.results || []);
-    if (found1) return found1;
+    const connections = j.connections || [];
 
-    // Essai avec format local (sans +1)
-    const local = phone.replace(/^\+1/, "");
-    const r2 = await fetch(
-      `https://people.googleapis.com/v1/people:searchContacts` +
-      `?query=${encodeURIComponent(local)}&readMask=${searchMask}`,
-      { headers: { Authorization: `Bearer ${token}` } }
+    const extractSalonFields = (fields) => {
+      const typeCoupe = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value || null;
+      const coiffeuse = fields.find(f => f.key === "SalonCoco-Coiffeuse")?.value || null;
+      return { typeCoupe, coiffeuse };
+    };
+
+    const match = connections.find(p =>
+      (p.phoneNumbers || []).some(n => samePhone(n.value || "", phone))
     );
-    const j2 = await r2.json();
-    const found2 = await findInResults(j2.results || []);
-    if (found2) return found2;
+
+    if (match) {
+      const name  = match.names?.[0]?.displayName || null;
+      const email = match.emailAddresses?.[0]?.value || null;
+      const { typeCoupe, coiffeuse } = extractSalonFields(match.userDefined || []);
+      console.log(`[LOOKUP] ✅ Trouvé: ${name} (${email}) typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+      return { name, email, found: true, typeCoupe, coiffeuse, resourceName: match.resourceName };
+    }
 
     console.log(`[LOOKUP] Nouveau client: ${phone}`);
     return null;
@@ -2111,6 +2083,13 @@ wss.on("connection", (twilioWs) => {
         clearInterval(heartbeat);
         clearInterval(twilioKeepalive);
         oaiWs?.close();
+        // Clore le log si pas déjà clos (client a raccroché)
+        if (session?.twilioCallSid) {
+          const log = callLogs.get(session.twilioCallSid);
+          if (log && log.result === "en cours") {
+            closeCallLog(session.twilioCallSid, "fin normale");
+          }
+        }
         break;
     }
   });
@@ -2119,6 +2098,13 @@ wss.on("connection", (twilioWs) => {
     clearInterval(heartbeat);
     clearInterval(twilioKeepalive);
     oaiWs?.close();
+    // Clore le log si pas déjà clos (déconnexion inattendue)
+    if (session?.twilioCallSid) {
+      const log = callLogs.get(session.twilioCallSid);
+      if (log && log.result === "en cours") {
+        closeCallLog(session.twilioCallSid, "fin normale");
+      }
+    }
   });
   twilioWs.on("error", (e) => console.error("[Twilio WS]", e.message));
 });
