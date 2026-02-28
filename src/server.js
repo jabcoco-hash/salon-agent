@@ -1554,6 +1554,88 @@ app.get("/oauth/callback", async (req, res) => {
   }
 });
 
+// ─── Route diagnostic Google Contacts ────────────────────────────────────────
+app.get("/debug-google/:phone", async (req, res) => {
+  const phone = decodeURIComponent(req.params.phone);
+  const token = await getGoogleAccessToken();
+  if (!token) return res.json({ error: "Pas de token Google — visite /oauth/start" });
+
+  const results = {};
+
+  // ── Test 1 : searchContacts avec readMask complet ──────────────────
+  try {
+    const r1 = await fetch(
+      `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers,userDefined`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const j1 = await r1.json();
+    results.test1_searchContacts_fullMask = {
+      status: r1.status,
+      resultCount: (j1.results || []).length,
+      firstPerson: j1.results?.[0]?.person || null,
+    };
+
+    // ── Test 2 : people.get sur le resourceName trouvé ───────────────
+    const resourceName = j1.results?.[0]?.person?.resourceName;
+    if (resourceName) {
+      const r2 = await fetch(
+        `https://people.googleapis.com/v1/${resourceName}?personFields=names,emailAddresses,phoneNumbers,userDefined`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const j2 = await r2.json();
+      results.test2_peopleGet_byResourceName = {
+        status: r2.status,
+        resourceName,
+        userDefined: j2.userDefined || [],
+        names: j2.names || [],
+        emails: j2.emailAddresses || [],
+        phones: j2.phoneNumbers || [],
+      };
+
+      // ── Test 3 : people.get avec personFields=userDefined seulement ─
+      const r3 = await fetch(
+        `https://people.googleapis.com/v1/${resourceName}?personFields=userDefined`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const j3 = await r3.json();
+      results.test3_peopleGet_userDefinedOnly = {
+        status: r3.status,
+        userDefined: j3.userDefined || [],
+        rawResponse: j3,
+      };
+    } else {
+      results.test2_peopleGet_byResourceName = { error: "Aucun contact trouvé à l'étape 1" };
+      results.test3_peopleGet_userDefinedOnly = { error: "Aucun contact trouvé à l'étape 1" };
+    }
+  } catch (e) {
+    results.error = e.message;
+  }
+
+  // ── Test 4 : listContacts avec readMask userDefined (autre endpoint) ─
+  try {
+    const r4 = await fetch(
+      `https://people.googleapis.com/v1/people/me/connections?personFields=names,phoneNumbers,userDefined&pageSize=100`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const j4 = await r4.json();
+    const all = j4.connections || [];
+    const match = all.find(p =>
+      (p.phoneNumbers || []).some(n => n.value?.replace(/\D/g,"").endsWith(phone.replace(/\D/g,"").slice(-10)))
+    );
+    results.test4_listConnections_match = {
+      status: r4.status,
+      totalContacts: all.length,
+      matchFound: !!match,
+      matchUserDefined: match?.userDefined || [],
+      matchName: match?.names?.[0]?.displayName || null,
+    };
+  } catch (e) {
+    results.test4_listConnections_match = { error: e.message };
+  }
+
+  res.json({ phone, results });
+});
+
 app.get("/debug-env", (req, res) => res.json({
   SALON_NAME, SALON_CITY, SALON_ADDRESS, SALON_HOURS, SALON_PRICE_LIST,
   TWILIO_CALLER_ID:     TWILIO_CALLER_ID     ? "✅" : "❌",
