@@ -916,8 +916,9 @@ async function runTool(name, args, session) {
         coiffeusesCibles = [{ name: "disponible", eventTypes: { homme: fallbackUri, femme: fallbackUri } }];
       }
 
-      // Récupérer les slots de toutes les coiffeuses cibles
+      // Récupérer les slots de toutes les coiffeuses cibles — un seul appel par coiffeuse
       const slotCoiffeuse = {}; // iso -> [noms]
+      const slotUriMap    = {}; // iso -> { uri, coiffeuse } — construit ICI, pas après
       for (const c of coiffeusesCibles) {
         const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
         if (!cUri) continue;
@@ -925,6 +926,7 @@ async function runTool(name, args, session) {
         for (const iso of cSlots) {
           if (!slotCoiffeuse[iso]) slotCoiffeuse[iso] = [];
           slotCoiffeuse[iso].push(c.name);
+          if (!slotUriMap[iso]) slotUriMap[iso] = { uri: cUri, coiffeuse: c.name };
         }
       }
       let slots = Object.keys(slotCoiffeuse).sort();
@@ -993,15 +995,6 @@ async function runTool(name, args, session) {
       selected.sort((a, b) => new Date(a) - new Date(b)); // toujours AM avant PM
       if (selected.length < 2) selected = unique.slice(0, 4); // fallback
 
-      // Construire la map iso → URI source (pour booking exact)
-      const slotUriMap = {};
-      for (const c of coiffeusesCibles) {
-        const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
-        if (!cUri) continue;
-        const cSlots = await getSlots(cUri, startDate, searchEnd);
-        for (const iso of cSlots) { if (!slotUriMap[iso]) slotUriMap[iso] = { uri: cUri, coiffeuse: c.name }; }
-      }
-
       console.log(`[SLOTS] ✅ ${selected.length} créneaux (${amSlots.length} AM dispo, ${pmSlots.length} PM dispo)`);
       return {
         disponible: true,
@@ -1012,7 +1005,7 @@ async function runTool(name, args, session) {
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
           event_type_uri: slotUriMap[iso]?.uri || null,
         })),
-        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec la DATE COMPLÈTE (ex: 'mardi le 3 mars à 13h30'). Si une coiffeuse a été demandée, commence par 'Avec [prénom coiffeuse], les disponibilités sont :' suivi des créneaux. Si aucune coiffeuse, commence par 'Les disponibilités sont :'. AM avant PM. IMPORTANT: quand le client choisit un créneau, passe son event_type_uri dans send_booking_link.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste — chaque créneau a son event_type_uri garanti. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse, 'Les disponibilités sont :'. REGROUPER par journée (ex: 'mardi le 3 mars à 9h et 14h, mercredi le 4 mars à 10h'). AM avant PM. Quand le client choisit, utilise EXACTEMENT l'event_type_uri du créneau choisi dans send_booking_link.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
