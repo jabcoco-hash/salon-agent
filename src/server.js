@@ -69,7 +69,11 @@ function wsBase() { return base().replace(/^https/, "wss").replace(/^http/, "ws"
 const sessions = new Map(); // twilioCallSid → session
 const pending  = new Map(); // token → { expiresAt, payload }
 // ─── Persistance logs JSON ────────────────────────────────────────────────────
-const LOGS_FILE = path.resolve("call_logs.json");
+// Railway Volume monté sur /data — persiste entre redémarrages
+// Sur Railway : Settings → Add Volume → Mount Path: /data
+// En local : fichier dans le répertoire courant
+const LOGS_DIR  = fs.existsSync("/data") ? "/data" : ".";
+const LOGS_FILE = path.join(LOGS_DIR, "call_logs.json");
 const MAX_LOGS  = 500;
 
 const callLogs = new Map(); // twilioCallSid → callLog
@@ -1115,7 +1119,7 @@ async function runTool(name, args, session) {
               .then(() => console.log("[HANGUP] ✅ Appel terminé"))
               .catch(e => console.error("[HANGUP] ❌", e.message));
           }
-        }, 8000);
+        }, 11000);
         return { success: true, direct: true, phone_display: fmtPhone(phone), email,
           message: "RDV confirmé. Dis EXACTEMENT : 'Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
       } catch (e) {
