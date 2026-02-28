@@ -548,6 +548,13 @@ async function sendSms(to, body) {
   console.log(`[SMS] ✅ → ${to}`);
 }
 
+function slotToShort(iso) {
+  // Format court pour SMS : "Lun 2 mars 9h30"
+  const loc = new Date(iso).toLocaleString("fr-CA", { timeZone: CALENDLY_TIMEZONE, weekday:"short", day:"numeric", month:"long", hour:"numeric", minute:"2-digit" });
+  // "lun. 2 mars 09 h 30" → "Lun 2 mars 9h30"
+  return loc.replace(/\./g,"").replace(/(\w)/g, c=>c.toUpperCase()).replace(/\s0(\d)\sh\s00/,"$1h").replace(/\s(\d+)\sh\s00/," $1h").replace(/\s(\d+)\sh\s(\d+)/," $1h$2");
+}
+
 // ─── System prompt ────────────────────────────────────────────────────────────
 function systemPrompt(callerNumber) {
   const callerDisplay = callerNumber ? fmtPhone(callerNumber) : null;
@@ -1142,26 +1149,13 @@ async function runTool(name, args, session) {
         await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
 
         const smsBody =
-          `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!
-
+          `${SALON_NAME}: RDV confirme
 ` +
-          `👤 Nom        : ${name}
+          `${slotToShort(args.slot_iso)}
 ` +
-          `✂️ Service    : ${serviceLabel(args.service)}
-` +
-          (args.coiffeuse ? `💇 Coiffeuse  : ${args.coiffeuse}
+          (args.coiffeuse ? `${args.coiffeuse}
 ` : "") +
-          `📅 Date/heure : ${slotToFrench(args.slot_iso)}
-` +
-          `📍 Adresse    : ${SALON_ADDRESS}
-
-` +
-          (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}
-` : "") +
-          (cancelUrl     ? `❌ Annuler  : ${cancelUrl}
-`     : "") +
-          `
-À bientôt! — ${SALON_NAME}`;
+          (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "");
 
         await Promise.race([
           sendSms(phone, smsBody),
@@ -1198,11 +1192,11 @@ async function runTool(name, args, session) {
 
     const link = `${base()}/confirm-email/${token}`;
     const smsPromise = sendSms(phone,
-      `${SALON_NAME} — Bonjour ${name}!
+      `${SALON_NAME}: Confirme ton RDV
 ` +
-      `Pour finaliser ton rendez-vous du ${slotToFrench(args.slot_iso)}, ` +
-      `saisis ton courriel ici (lien valide 2h) :
-${link}`
+      `${slotToShort(args.slot_iso)}
+` +
+      `Courriel requis: ${link}`
     );
 
     try {
@@ -2242,16 +2236,13 @@ app.post("/confirm-email/:token", async (req, res) => {
     await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
 
     await sendSms(phone,
-      `✅ Ton rendez-vous au ${SALON_NAME} est confirmé!\n\n` +
-      `👤 Nom        : ${name}\n` +
-      `✉️ Courriel   : ${email}\n` +
-      `✂️ Service    : ${serviceLabel(service)}\n` +
-      (coiffeuse ? `💇 Coiffeuse  : ${coiffeuse}\n` : "") +
-      `📅 Date/heure : ${slotToFrench(startTimeIso)}\n` +
-      `📍 Adresse    : ${SALON_ADDRESS}\n\n` +
-      (rescheduleUrl ? `📆 Modifier : ${rescheduleUrl}\n` : "") +
-      (cancelUrl     ? `❌ Annuler  : ${cancelUrl}\n`     : "") +
-      `\nÀ bientôt! — ${SALON_NAME}`
+      `${SALON_NAME}: RDV confirme
+` +
+      `${slotToShort(startTimeIso)}
+` +
+      (coiffeuse ? `${coiffeuse}
+` : "") +
+      (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "")
     );
 
     res.type("text/html").send(htmlSuccess(name, slotToFrench(startTimeIso), rescheduleUrl, cancelUrl));
