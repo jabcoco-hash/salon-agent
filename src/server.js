@@ -562,10 +562,10 @@ COMPORTEMENT FONDAMENTAL :
 - Tu ne poses qu'UNE seule question à la fois. Tu attends la réponse avant de continuer.
 
 ACCUEIL :
-- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME} à ${SALON_CITY}, je m'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous. Comment puis-je t'aider?"
-- Cette phrase plus longue donne le temps au système de vérifier ton dossier en arrière-plan.
-- Puis SILENCE COMPLET. Tu attends que le client parle. Rien d'autre.
-- Si le système t'indique qu'un dossier client existe avec des préférences (typeCoupe, coiffeuse) → après ta phrase d'accueil, complète avec : "Comment puis-je t'aider, [Prénom]? Désires-tu prendre rendez-vous pour une [typeCoupe] avec [coiffeuse]?" selon les infos du dossier.
+- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME} à ${SALON_CITY}, je m'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous."
+- Puis SILENCE ABSOLU — attends le message système qui va arriver immédiatement après.
+- Le système t'enverra TOUJOURS un message après l'intro pour te dire quoi dire : soit "Comment puis-je t'aider?" soit une suggestion personnalisée pour le client connu. Suis ce message exactement.
+- NE PAS improviser ou ajouter quoi que ce soit avant ce message système.
 
 PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une phrase, traite-les toutes, ne repose pas de questions auxquelles il a déjà répondu.
 
@@ -1667,7 +1667,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "PHRASE OBLIGATOIRE — dis mot pour mot : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous. Comment puis-je t\'aider?' — Dis cette phrase EN ENTIER. Ensuite SILENCE ABSOLU — attends les instructions du système sur le dossier client avant de continuer.",
+          text: "PHRASE OBLIGATOIRE — dis mot pour mot, sans rien ajouter ni retrancher : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène votre assistante virtuelle! Je peux t\'aider à prendre un rendez-vous, te donner nos heures d\'ouverture, notre liste de prix ou notre adresse. En tout temps, si tu veux parler à un membre de l\'équipe, dis simplement Équipe et je te transfère.' — Dis cette phrase EN ENTIER, mot pour mot, puis SILENCE ABSOLU. Le système va t\'envoyer un message immédiatement après pour te dire quoi dire ensuite selon le dossier du client.",
         }],
       },
     }));
@@ -1706,6 +1706,60 @@ wss.on("connection", (twilioWs) => {
         const txt = ev.transcript?.trim();
         if (txt && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "helene", txt);
+        }
+        break;
+      }
+
+      case "response.done": {
+        // Détecter la fin de l'intro (première réponse) et injecter le suivi client
+        if (!session?.introPlayed) {
+          if (session) session.introPlayed = true;
+          const prefetched = session?.prefetchedClient;
+
+          let followUp = null;
+
+          if (prefetched && prefetched.name) {
+            // Client connu — construire la suggestion personnalisée
+            const prenom = prefetched.name.split(" ")[0];
+            if (prefetched.typeCoupe && prefetched.coiffeuse) {
+              followUp = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${prefetched.typeCoupe} avec ${prefetched.coiffeuse}, ${prenom}?" puis attends la réponse.`;
+            } else if (prefetched.typeCoupe) {
+              followUp = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${prefetched.typeCoupe}, ${prenom}?" puis attends la réponse.`;
+            } else {
+              followUp = `Dis EXACTEMENT : "Comment puis-je t'aider, ${prenom}?" puis attends la réponse.`;
+            }
+          } else if (prefetched === false) {
+            // Nouveau client confirmé
+            followUp = "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
+          } else {
+            // Lookup pas encore terminé — attendre 1.5s puis réessayer
+            setTimeout(() => {
+              const p2 = session?.prefetchedClient;
+              let fu2;
+              if (p2 && p2.name) {
+                const prenom = p2.name.split(" ")[0];
+                if (p2.typeCoupe && p2.coiffeuse) {
+                  fu2 = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${p2.typeCoupe} avec ${p2.coiffeuse}, ${prenom}?" puis attends la réponse.`;
+                } else if (p2.typeCoupe) {
+                  fu2 = `Dis EXACTEMENT : "Désires-tu prendre rendez-vous pour une ${p2.typeCoupe}, ${prenom}?" puis attends la réponse.`;
+                } else {
+                  fu2 = `Dis EXACTEMENT : "Comment puis-je t'aider, ${prenom}?" puis attends la réponse.`;
+                }
+              } else {
+                fu2 = "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
+              }
+              if (oaiWs?.readyState === WebSocket.OPEN) {
+                oaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: fu2 }] } }));
+                oaiWs.send(JSON.stringify({ type: "response.create" }));
+              }
+            }, 1500);
+            break; // sortir ici — le setTimeout gère la suite
+          }
+
+          if (followUp && oaiWs?.readyState === WebSocket.OPEN) {
+            oaiWs.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: followUp }] } }));
+            oaiWs.send(JSON.stringify({ type: "response.create" }));
+          }
         }
         break;
       }
