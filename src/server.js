@@ -2240,6 +2240,73 @@ app.get("/admin/faq/page", (req, res) => {
   const logoHtml = SALON_LOGO_URL
     ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:44px;object-fit:contain;margin-bottom:14px;display:block">`
     : "";
+
+  // Script séparé du template pour éviter les conflits de quotes/échappement
+  const faqScript = [
+    "var faqData=[];",
+    "function gettok(){return document.getElementById('tok').value.trim();}",
+    "function showOk(m){var e=document.getElementById('alertOk');e.textContent=m;e.style.display='block';document.getElementById('alertErr').style.display='none';setTimeout(function(){e.style.display='none';},4000);}",
+    "function showErr(m){var e=document.getElementById('alertErr');e.textContent=m;e.style.display='block';document.getElementById('alertOk').style.display='none';}",
+    "function esc(s){return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}",
+    "function renderFaq(){",
+    "  var list=document.getElementById('faqList');",
+    "  var cnt=document.getElementById('faqCount');",
+    "  cnt.textContent=faqData.length+' question'+(faqData.length!==1?'s':'')+' dans la FAQ';",
+    "  if(!faqData.length){list.innerHTML='<p style=\'text-align:center;color:#9ca3af;padding:30px\'>Aucune question.</p>';return;}",
+    "  var h='';",
+    "  for(var i=0;i<faqData.length;i++){",
+    "    var f=faqData[i];var id=f.id;",
+    "    h+='<div class=\'card\' data-id=\''+id+'\'>';",
+    "    h+='<div class=\'card-head\' data-action=\'toggle\' data-id=\''+id+'\'>';",
+    "    h+='<span class=\'badge-num\'>'+(i+1)+'</span>';",
+    "    h+='<span class=\'q-text\'>'+esc(f.question)+'</span>';",
+    "    h+='<span class=\'chevron\' id=\'chev-'+id+'\'>&#9660;</span></div>';",
+    "    h+='<div class=\'card-body\' id=\'body-'+id+'\'>';",
+    "    h+='<p class=\'r-text\' id=\'r-'+id+'\'>'+esc(f.reponse)+'</p>';",
+    "    h+='<div class=\'edit-form\' id=\'edit-'+id+'\'>';",
+    "    h+='<input type=\'text\' id=\'eq-'+id+'\' value=\''+esc(f.question)+'\'>';",
+    "    h+='<textarea id=\'er-'+id+'\'>'+esc(f.reponse)+'</textarea>';",
+    "    h+='<div style=\'display:flex;gap:8px\'>';",
+    "    h+='<button class=\'btn btn-add\' data-action=\'save\' data-id=\''+id+'\'>Sauvegarder</button>';",
+    "    h+='<button class=\'btn btn-cancel\' data-action=\'cancel\' data-id=\''+id+'\'>Annuler</button>';",
+    "    h+='</div></div>';",
+    "    h+='<div class=\'actions\' id=\'acts-'+id+'\'>';",
+    "    h+='<button class=\'btn btn-edit\' data-action=\'edit\' data-id=\''+id+'\'>Modifier</button>';",
+    "    h+='<button class=\'btn btn-del\' data-action=\'delete\' data-id=\''+id+'\'>Supprimer</button>';",
+    "    h+='</div></div></div>';",
+    "  }",
+    "  list.innerHTML=h;",
+    "}",
+    "function toggle(id){var b=document.getElementById('body-'+id);var c=document.getElementById('chev-'+id);var o=b.classList.toggle('open');c.textContent=o?'\u25B2':'\u25BC';}",
+    "function startEdit(id){document.getElementById('edit-'+id).classList.add('open');document.getElementById('acts-'+id).style.display='none';document.getElementById('r-'+id).style.display='none';}",
+    "function cancelEdit(id){document.getElementById('edit-'+id).classList.remove('open');document.getElementById('acts-'+id).style.display='';document.getElementById('r-'+id).style.display='';}",
+    "function loadFaq(){fetch('/admin/faq').then(function(r){return r.json();}).then(function(j){if(j.ok){faqData=j.items;renderFaq();}}).catch(function(){});}",
+    "function addFaq(){",
+    "  var t=gettok();if(!t){showErr('Entre le token admin.');return;}",
+    "  var q=document.getElementById('newQ').value.trim();",
+    "  var r=document.getElementById('newR').value.trim();",
+    "  if(!q||!r){showErr('Question et reponse requises.');return;}",
+    "  fetch('/admin/faq?token='+encodeURIComponent(t),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,reponse:r})})",
+    "  .then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);faqData.push(j.item);document.getElementById('newQ').value='';document.getElementById('newR').value='';renderFaq();showOk('Question ajoutee!');}).catch(function(e){showErr('Erreur: '+e.message);});",
+    "}",
+    "function saveEdit(id){",
+    "  var t=gettok();if(!t){showErr('Token requis.');return;}",
+    "  var q=document.getElementById('eq-'+id).value.trim();",
+    "  var r=document.getElementById('er-'+id).value.trim();",
+    "  if(!q||!r){showErr('Champs requis.');return;}",
+    "  fetch('/admin/faq/'+id+'?token='+encodeURIComponent(t),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,reponse:r})})",
+    "  .then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);var i=faqData.findIndex(function(f){return f.id===id;});if(i>=0)faqData[i]=j.item;renderFaq();showOk('Mis a jour!');}).catch(function(e){showErr('Erreur: '+e.message);});",
+    "}",
+    "function deleteFaq(id){",
+    "  if(!confirm('Supprimer?'))return;",
+    "  var t=gettok();if(!t){showErr('Token requis.');return;}",
+    "  fetch('/admin/faq/'+id+'?token='+encodeURIComponent(t),{method:'DELETE'})",
+    "  .then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);faqData=faqData.filter(function(f){return f.id!==id;});renderFaq();showOk('Supprime!');}).catch(function(e){showErr('Erreur: '+e.message);});",
+    "}",
+    "document.addEventListener('click',function(e){var el=e.target.closest('[data-action]');if(!el)return;var a=el.getAttribute('data-action');var id=el.getAttribute('data-id');if(a==='toggle')toggle(id);else if(a==='edit')startEdit(id);else if(a==='cancel')cancelEdit(id);else if(a==='save')saveEdit(id);else if(a==='delete')deleteFaq(id);});",
+    "loadFaq();"
+  ].join("\n");
+
   res.type("text/html").send(`<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -2255,34 +2322,33 @@ h1{font-size:1.25rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
 .card{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;margin-bottom:10px;overflow:hidden}
 .card-head{display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;user-select:none}
 .card-head:hover{background:#f9f8ff}
-.q-text{flex:1;font-weight:600;font-size:.93rem;color:#1a1a2e}
+.q-text{flex:1;font-weight:600;font-size:.93rem}
 .badge-num{background:#ede9fe;color:#6c47ff;font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:10px;min-width:26px;text-align:center}
-.chevron{color:#9ca3af;font-size:.85rem;transition:transform .2s}
-.chevron.open{transform:rotate(180deg)}
+.chevron{color:#9ca3af;font-size:.85rem}
 .card-body{display:none;padding:0 18px 16px;border-top:1.5px solid #f3f4f6}
 .card-body.open{display:block}
 .r-text{font-size:.88rem;color:#374151;line-height:1.6;margin:12px 0}
-.actions{display:flex;gap:8px;margin-top:10px}
-.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:7px;font-size:.82rem;font-weight:600;cursor:pointer;border:none}
+.actions{display:flex;gap:8px;margin-top:8px}
+.btn{display:inline-flex;align-items:center;padding:7px 14px;border-radius:7px;font-size:.82rem;font-weight:600;cursor:pointer;border:none}
 .btn-edit{background:#eff6ff;color:#2563eb}.btn-edit:hover{background:#dbeafe}
 .btn-del{background:#fef2f2;color:#dc2626}.btn-del:hover{background:#fee2e2}
+.btn-add{background:#6c47ff;color:#fff}.btn-add:hover{background:#5538d4}
+.btn-cancel{background:#f3f4f6;color:#374151}
 .add-card{background:#fff;border:2px dashed #c4b5fd;border-radius:12px;padding:20px 18px;margin-bottom:20px}
 .add-card h2{font-size:.95rem;font-weight:700;color:#6c47ff;margin-bottom:14px}
 label{display:block;font-size:.80rem;font-weight:600;color:#374151;margin-bottom:5px}
-input[type=text],textarea{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none}
+input[type=text],textarea{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none;box-sizing:border-box}
 input[type=text]:focus,textarea:focus{border-color:#6c47ff}
 textarea{resize:vertical;min-height:72px}
 .field{margin-bottom:12px}
-.btn-add{background:#6c47ff;color:#fff;padding:9px 22px;font-size:.88rem}.btn-add:hover{background:#5538d4}
-.token-bar{display:flex;gap:8px;margin-bottom:18px;align-items:center}
-.token-bar input{flex:1;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem}
+.token-bar{margin-bottom:18px}
+.token-bar input{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;box-sizing:border-box}
 .token-bar input:focus{border-color:#6c47ff;outline:none}
 .alert{padding:10px 14px;border-radius:8px;font-size:.84rem;margin-bottom:14px;display:none}
 .alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
 .alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
-.empty{text-align:center;padding:40px;color:#9ca3af;font-size:.9rem}
 .count{color:#9ca3af;font-size:.8rem;margin-bottom:14px}
-.edit-form{display:none;padding:10px 0 0}
+.edit-form{display:none;padding:10px 0 4px}
 .edit-form.open{display:block}
 .edit-form input,.edit-form textarea{margin-bottom:8px}
 </style>
@@ -2300,161 +2366,17 @@ textarea{resize:vertical;min-height:72px}
   <div class="add-card">
     <h2>➕ Ajouter une question</h2>
     <div class="field"><label>Question</label><input type="text" id="newQ" placeholder="Ex: Acceptez-vous les animaux?"></div>
-    <div class="field"><label>Réponse d'Hélène</label><textarea id="newR" placeholder="Ex: Oui, les chiens calmes sont les bienvenus!"></textarea></div>
+    <div class="field"><label>Reponse d'Helene</label><textarea id="newR" placeholder="Ex: Oui, les chiens calmes sont les bienvenus!"></textarea></div>
     <button class="btn btn-add" onclick="addFaq()">➕ Ajouter</button>
   </div>
   <div id="faqCount" class="count"></div>
   <div id="faqList"></div>
 </div>
-<script>
-var faqData = [];
-
-function gettok() { return document.getElementById("tok").value.trim(); }
-
-function showOk(msg) {
-  var el = document.getElementById("alertOk");
-  el.textContent = msg; el.style.display = "block";
-  document.getElementById("alertErr").style.display = "none";
-  setTimeout(function(){ el.style.display = "none"; }, 4000);
-}
-function showErr(msg) {
-  var el = document.getElementById("alertErr");
-  el.textContent = msg; el.style.display = "block";
-  document.getElementById("alertOk").style.display = "none";
-}
-
-function esc(s) {
-  return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-}
-
-function renderFaq() {
-  var list = document.getElementById("faqList");
-  var count = document.getElementById("faqCount");
-  count.textContent = faqData.length + " question" + (faqData.length !== 1 ? "s" : "") + " dans la FAQ d'Helene";
-  if (!faqData.length) {
-    list.innerHTML = '<div class="empty">Aucune question pour linstant. Ajoutez-en une ci-dessus.</div>';
-    return;
-  }
-  var html = "";
-  for (var i = 0; i < faqData.length; i++) {
-    var f = faqData[i];
-    var id = f.id;
-    html += "<div class=\"card\" id=\"card-" + id + "\" data-id=\"" + id + "\">";
-    html += "<div class=\"card-head\" data-action=\"toggle\" data-id=\"" + id + "\">";
-    html += "<span class=\"badge-num\">" + (i+1) + "</span>";
-    html += "<span class=\"q-text\">" + esc(f.question) + "</span>";
-    html += "<span class=\"chevron\" id=\"chev-" + id + "\">&#9660;</span>";
-    html += "</div>";
-    html += "<div class=\"card-body\" id=\"body-" + id + "\">";
-    html += "<p class=\"r-text\" id=\"r-" + id + "\">" + esc(f.reponse) + "</p>";
-    html += "<div class=\"edit-form\" id=\"edit-" + id + "\">";
-    html += "<input type=\"text\" id=\"eq-" + id + "\" value=\"" + esc(f.question) + "\">";
-    html += "<textarea id=\"er-" + id + "\">" + esc(f.reponse) + "</textarea>";
-    html += "<div style=\"display:flex;gap:8px\">";
-    html += "<button class=\"btn btn-add\" style=\"font-size:.8rem;padding:6px 14px\" data-action=\"save\" data-id=\"" + id + "\">Sauvegarder</button>";
-    html += "<button class=\"btn\" style=\"background:#f3f4f6;color:#374151;font-size:.8rem;padding:6px 12px\" data-action=\"cancel\" data-id=\"" + id + "\">Annuler</button>";
-    html += "</div></div>";
-    html += "<div class=\"actions\" id=\"acts-" + id + "\">";
-    html += "<button class=\"btn btn-edit\" data-action=\"edit\" data-id=\"" + id + "\">Modifier</button>";
-    html += "<button class=\"btn btn-del\" data-action=\"delete\" data-id=\"" + id + "\">Supprimer</button>";
-    html += "</div></div></div>";
-  }
-  list.innerHTML = html;
-}
-
-function toggle(id) {
-  var body = document.getElementById("body-"+id);
-  var chev = document.getElementById("chev-"+id);
-  var isOpen = body.classList.toggle("open");
-  chev.classList.toggle("open", isOpen);
-}
-function startEdit(id) {
-  document.getElementById("edit-"+id).classList.add("open");
-  document.getElementById("acts-"+id).style.display = "none";
-  document.getElementById("r-"+id).style.display = "none";
-}
-function cancelEdit(id) {
-  document.getElementById("edit-"+id).classList.remove("open");
-  document.getElementById("acts-"+id).style.display = "";
-  document.getElementById("r-"+id).style.display = "";
-}
-
-function loadFaq() {
-  fetch("/admin/faq").then(function(r){ return r.json(); }).then(function(j){
-    if (j.ok) { faqData = j.items; renderFaq(); }
-  }).catch(function(){});
-}
-
-function addFaq() {
-  var t = gettok();
-  if (!t) { showErr("Entre le token admin d'abord."); return; }
-  var q = document.getElementById("newQ").value.trim();
-  var r = document.getElementById("newR").value.trim();
-  if (!q || !r) { showErr("Question et reponse requises."); return; }
-  fetch("/admin/faq?token=" + encodeURIComponent(t), {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ question: q, reponse: r })
-  }).then(function(res){ return res.json(); }).then(function(j){
-    if (!j.ok) throw new Error(j.error);
-    faqData.push(j.item);
-    document.getElementById("newQ").value = "";
-    document.getElementById("newR").value = "";
-    renderFaq();
-    showOk("Question ajoutee - Helene la connait des le prochain appel.");
-  }).catch(function(e){ showErr("Erreur: " + e.message); });
-}
-
-function saveEdit(id) {
-  var t = gettok();
-  if (!t) { showErr("Entre le token admin d'abord."); return; }
-  var q = document.getElementById("eq-"+id).value.trim();
-  var r = document.getElementById("er-"+id).value.trim();
-  if (!q || !r) { showErr("Champs requis."); return; }
-  fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), {
-    method: "PUT",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ question: q, reponse: r })
-  }).then(function(res){ return res.json(); }).then(function(j){
-    if (!j.ok) throw new Error(j.error);
-    var idx = faqData.findIndex(function(f){ return f.id === id; });
-    if (idx >= 0) faqData[idx] = j.item;
-    renderFaq();
-    showOk("Question mise a jour.");
-  }).catch(function(e){ showErr("Erreur: " + e.message); });
-}
-
-function deleteFaq(id) {
-  if (!confirm("Supprimer cette question?")) return;
-  var t = gettok();
-  if (!t) { showErr("Entre le token admin d'abord."); return; }
-  fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), { method: "DELETE" })
-  .then(function(res){ return res.json(); }).then(function(j){
-    if (!j.ok) throw new Error(j.error);
-    faqData = faqData.filter(function(f){ return f.id !== id; });
-    renderFaq();
-    showOk("Question supprimee.");
-  }).catch(function(e){ showErr("Erreur: " + e.message); });
-}
-
-// Délégation d'événements — évite tous les problèmes de quotes dans onclick
-document.addEventListener("click", function(e) {
-  var el = e.target.closest("[data-action]");
-  if (!el) return;
-  var action = el.getAttribute("data-action");
-  var id = el.getAttribute("data-id");
-  if (action === "toggle") toggle(id);
-  else if (action === "edit") startEdit(id);
-  else if (action === "cancel") cancelEdit(id);
-  else if (action === "save") saveEdit(id);
-  else if (action === "delete") deleteFaq(id);
-});
-
-loadFaq();
-</script>
+<script>${faqScript}</script>
 </body>
 </html>`);
 });
+
 
 // ─── Routes admin logs ────────────────────────────────────────────────────────
 // Vider tous les logs (garde le fichier vide)
