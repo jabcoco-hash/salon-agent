@@ -51,10 +51,10 @@ const {
   RAILWAY_API_TOKEN,
 } = process.env;
 
-// Variables auto-injectées par Railway (pas visibles dans l'UI mais disponibles)
+// Variables auto-injectées par Railway
 const RAILWAY_SERVICE_ID     = process.env.RAILWAY_SERVICE_ID;
 const RAILWAY_PROJECT_ID     = process.env.RAILWAY_PROJECT_ID;
-const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID || "production";
+const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID; // ex: c86295eb-3b4d-4d99-a4f8-4ee25b68d080
 
 function envStr(key, fallback = "") {
   const v = process.env[key];
@@ -96,9 +96,27 @@ function loadLogsFromDisk() {
   try {
     if (fs.existsSync(LOGS_FILE)) {
       const data = JSON.parse(fs.readFileSync(LOGS_FILE, "utf8"));
-      // data est un tableau trié du plus récent au plus ancien
-      for (const log of data) callLogs.set(log.sid, log);
-      console.log(`[LOGS] ✅ ${data.length} appels chargés depuis call_logs.json`);
+      let fixed = 0, dropped = 0;
+      for (const log of data) {
+        if (log.result === "en cours") {
+          // Un échange réel = au moins 1 message client OU plus de 1 event
+          const hasRealExchange = (log.resumeClient?.length > 0) || (log.events?.length > 1);
+          if (hasRealExchange) {
+            // Garder mais fermer proprement
+            log.result  = "fin normale";
+            log.endedAt = log.endedAt || log.startedAt || new Date().toISOString();
+            fixed++;
+            callLogs.set(log.sid, log);
+          } else {
+            // Appel fantôme sans échange → supprimer
+            dropped++;
+          }
+        } else {
+          callLogs.set(log.sid, log);
+        }
+      }
+      console.log(`[LOGS] ✅ ${data.length} appels chargés — ${fixed} fermés, ${dropped} fantômes supprimés`);
+      if (fixed > 0 || dropped > 0) saveLogsToDisk();
     }
   } catch(e) {
     console.error("[LOGS] ❌ Erreur chargement:", e.message);
@@ -129,6 +147,7 @@ function startCallLog(sid, callerNumber) {
     service: null,
     slot: null,
     clientNom: null,
+    clientType: null,        // "existant" | "nouveau" | null
     resumeClient: [],
     unanswered_questions: [],
     domains: [],
@@ -152,9 +171,17 @@ function logEvent(sid, type, msg) {
 function closeCallLog(sid, result) {
   const log = callLogs.get(sid);
   if (!log) return;
+  // Supprimer les appels sans aucun échange réel (fantômes)
+  const hasRealExchange = (log.resumeClient?.length > 0) || (log.events?.length > 1);
+  if (!hasRealExchange && result === "fin normale") {
+    callLogs.delete(sid);
+    saveLogsToDisk();
+    console.log(`[LOGS] 🗑 Appel fantôme supprimé (${sid})`);
+    return;
+  }
   log.endedAt = new Date().toISOString();
   log.result  = result;
-  saveLogsToDisk(); // Sauvegarder seulement quand l'appel se termine
+  saveLogsToDisk();
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1095,7 +1122,7 @@ async function runTool(name, args, session) {
     }
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
-      if (cl) { cl.clientNom = client.name; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
+      if (cl) { cl.clientNom = client.name; cl.clientType = "existant"; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
       const prefSuggestion = client.typeCoupe || client.coiffeuse
         ? ` Désires-tu prendre rendez-vous pour une ${client.typeCoupe || "coupe"}${client.coiffeuse ? " avec " + client.coiffeuse : ""}?`
         : "";
@@ -1110,6 +1137,7 @@ async function runTool(name, args, session) {
       };
     }
     console.log(`[LOOKUP] Nouveau client`);
+    if (cl) cl.clientType = "nouveau";
     return { found: false, message: "Nouveau client — demande le nom normalement." };
   }
 
@@ -1165,6 +1193,8 @@ async function runTool(name, args, session) {
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
+    // Confirmer le type client si pas encore déterminé
+    if (cl && !cl.clientType) cl.clientType = args.email ? "existant" : "nouveau";
     // Charger les coiffeuses si pas encore fait
     if (coiffeuses.length === 0) await loadCoiffeuses();
 
@@ -1499,6 +1529,7 @@ app.get("/dashboard", (req, res) => {
         <span class="time">${fmtTime(log.startedAt)}</span>
         <span class="dur">${duration(log)}</span>
         ${log.clientNom ? `<span class="tag tag-nom">👤 ${log.clientNom}</span>` : ""}
+        ${log.clientType === "existant" ? `<span class="tag tag-existant">⭐ Client existant</span>` : log.clientType === "nouveau" ? `<span class="tag tag-nouveau">🆕 Nouveau client</span>` : ""}
         ${log.service ? `<span class="tag tag-svc">✂️ ${log.service}${log.coiffeuse ? " · "+log.coiffeuse : ""}</span>` : ""}
         ${log.slot ? `<span class="tag tag-slot">📅 ${log.slot.replace("T"," ").slice(0,16)}</span>` : ""}
         ${log.demandes?.length ? `<span class="tag tag-dem">💬 ${log.demandes.join(", ")}</span>` : ""}
@@ -1594,7 +1625,9 @@ app.get("/dashboard", (req, res) => {
   .dur{color:#6b7280;font-size:.78rem;background:#f3f4f6;padding:1px 7px;border-radius:10px}
   .tag{font-size:.78rem;background:#f3f4f6;color:#374151;padding:2px 8px;border-radius:8px}
   .tag-nom{background:#f5f3ff;color:#6c47ff}
-  .tag-svc{background:#ecfdf5;color:#059669}
+  .tag-existant{background:#fef9c3;color:#854d0e;border:1px solid #fde047}
+  .tag-nouveau{background:#ecfdf5;color:#065f46;border:1px solid #6ee7b7}
+  .tag-svc{background:#f0fdf4;color:#059669}
   .tag-slot{background:#eff6ff;color:#2563eb}
   .tag-dem{background:#fff7ed;color:#c2410c}
 
@@ -1655,6 +1688,12 @@ ${SALON_LOGO_URL
   <div class="tile" data-filter="erreur" onclick="filterCalls(this,'erreur')">
     <div class="tile-n" style="color:#dc2626">${logs.filter(l=>l.result==="erreur").length}</div><div class="tile-l">Erreurs</div>
   </div>
+  <div class="tile" data-filter="existant" onclick="filterCalls(this,'existant')">
+    <div class="tile-n" style="color:#854d0e">${logs.filter(l=>l.clientType==="existant").length}</div><div class="tile-l">⭐ Clients existants</div>
+  </div>
+  <div class="tile" data-filter="nouveau" onclick="filterCalls(this,'nouveau')">
+    <div class="tile-n" style="color:#065f46">${logs.filter(l=>l.clientType==="nouveau").length}</div><div class="tile-l">🆕 Nouveaux clients</div>
+  </div>
   <div class="tile tile-questions" onclick="togglePanel('panel-questions', this)">
     <div class="tile-n">${allUnanswered.length}</div><div class="tile-l">❓ Questions sans réponse</div>
   </div>
@@ -1691,9 +1730,15 @@ function filterCalls(el, val) {
   el.classList.add('active');
   document.querySelectorAll('.call-card').forEach(card => {
     if (val === 'all') { card.style.display = ''; return; }
-    const badge = card.querySelector('.badge');
+    const badge  = card.querySelector('.badge');
     const result = badge ? badge.textContent.trim() : '';
-    card.style.display = (val === 'réservation' ? result.startsWith('réservation') : result === val) ? '' : 'none';
+    if (val === 'existant') {
+      card.style.display = card.querySelector('.tag-existant') ? '' : 'none';
+    } else if (val === 'nouveau') {
+      card.style.display = card.querySelector('.tag-nouveau') ? '' : 'none';
+    } else {
+      card.style.display = (val === 'réservation' ? result.startsWith('réservation') : result === val) ? '' : 'none';
+    }
   });
 }
 function togglePanel(id, tile) {
@@ -1719,13 +1764,16 @@ app.get("/admin/salon", (req, res) => {
     { key: "SALON_ADDRESS",    label: "Adresse",                val: SALON_ADDRESS,    multi: false },
     { key: "SALON_HOURS",      label: "Heures d'ouverture",     val: SALON_HOURS,      multi: true  },
     { key: "SALON_PRICE_LIST", label: "Liste de prix",          val: SALON_PRICE_LIST, multi: true  },
-    { key: "SALON_PAYMENT",    label: "Modes de paiement",      val: SALON_PAYMENT,    multi: false },
-    { key: "SALON_PARKING",    label: "Stationnement",          val: SALON_PARKING,    multi: false },
-    { key: "SALON_ACCESS",     label: "Accessibilité",          val: SALON_ACCESS,     multi: false },
+    { key: "SALON_PAYMENT",    label: "Modes de paiement",      val: SALON_PAYMENT,    multi: true  },
+    { key: "SALON_PARKING",    label: "Stationnement",          val: SALON_PARKING,    multi: true  },
+    { key: "SALON_ACCESS",     label: "Accessibilité",          val: SALON_ACCESS,     multi: true  },
     { key: "SALON_LOGO_URL",   label: "URL du logo",            val: SALON_LOGO_URL,   multi: false },
   ];
 
   const hasRailwayAPI = !!(RAILWAY_API_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID);
+  console.log("[ADMIN] Railway API:", hasRailwayAPI ? "✅" : "❌", {
+    token: !!RAILWAY_API_TOKEN, svc: RAILWAY_SERVICE_ID, env: RAILWAY_ENVIRONMENT_ID
+  });
 
   const fields = SALON_VARS.map(v => {
     const safe = (v.val || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -1868,14 +1916,16 @@ async function saveToRailway() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ variables: getValues() })
     });
-    const j = await r.json();
-    if (!r.ok || !j.ok) throw new Error(j.error || "Erreur inconnue");
+    let j;
+    try { j = await r.json(); } catch(pe) { throw new Error("Réponse serveur invalide (status " + r.status + ")"); }
+    if (!r.ok || !j.ok) throw new Error(j.error || "Erreur HTTP " + r.status);
     const msg = j.redeployed
-      ? "✅ Sauvegardé et redéploiement déclenché ! Les changements seront actifs dans ~30 secondes."
-      : "✅ Variables sauvegardées. Redéploiement: " + (j.warning || "non confirmé");
+      ? "✅ Sauvegardé! Redéploiement déclenché — changements actifs dans ~30 secondes."
+      : "✅ Variables sauvegardées. " + (j.warning ? "Note: " + j.warning : "Redéploiement non confirmé.");
     showAlert("alertOk", msg);
   } catch(e) {
-    showAlert("alertErr", "❌ Erreur : " + e.message);
+    showAlert("alertErr", "❌ " + e.message);
+    console.error("Save error:", e);
   } finally {
     btn.disabled = false; spinner.style.display = "none";
   }
@@ -1896,7 +1946,7 @@ function copyEnv() {
 });
 
 // ─── Route POST admin/salon/save → Railway API ───────────────────────────────
-app.post("/admin/salon/save", express.json(), async (req, res) => {
+app.post("/admin/salon/save", async (req, res) => {
   const token = req.headers["x-admin-token"] || req.query.token;
   if (token !== (process.env.ADMIN_TOKEN || "")) return res.status(401).json({ error: "Non autorisé" });
 
@@ -2419,6 +2469,7 @@ wss.on("connection", (twilioWs) => {
           };
 
           if (prefetched && prefetched.name) {
+            if (cl) cl.clientType = "existant";
             followUp = buildFollowUp(prefetched);
           } else if (prefetched === false) {
             // Nouveau client confirmé
