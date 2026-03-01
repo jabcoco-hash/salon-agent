@@ -87,6 +87,23 @@ const pending  = new Map(); // token → { expiresAt, payload }
 // En local : fichier dans le répertoire courant
 const LOGS_DIR  = fs.existsSync("/data") ? "/data" : ".";
 const LOGS_FILE = path.join(LOGS_DIR, "call_logs.json");
+const FAQ_FILE  = path.join(LOGS_DIR, "faq.json");
+
+// Charger / sauvegarder FAQ
+let faqItems = []; // [{ id, question, reponse, createdAt }]
+function loadFaq() {
+  try {
+    if (fs.existsSync(FAQ_FILE)) {
+      faqItems = JSON.parse(fs.readFileSync(FAQ_FILE, "utf8"));
+      console.log(`[FAQ] ✅ ${faqItems.length} entrée(s) chargée(s)`);
+    }
+  } catch(e) { console.warn("[FAQ] ⚠️ Erreur chargement:", e.message); }
+}
+function saveFaq() {
+  try { fs.writeFileSync(FAQ_FILE, JSON.stringify(faqItems, null, 2), "utf8"); }
+  catch(e) { console.error("[FAQ] ❌ Erreur sauvegarde:", e.message); }
+}
+loadFaq();
 const MAX_LOGS  = 500;
 
 const callLogs = new Map(); // twilioCallSid → callLog
@@ -809,6 +826,7 @@ FAQ SALON (B3+B4) — réponds directement sans outil :
 - Stationnement → utilise les infos SALON ci-dessus.
 - Accessibilité → utilise les infos SALON ci-dessus.
 - Durée service (B4) : "En général une coupe prend environ 30 à 45 minutes. Pour plus de détails je peux te transférer à l'équipe."
+${faqItems.length > 0 ? "\nQUESTIONS FRÉQUENTES PERSONNALISÉES — réponds directement avec ces réponses, mot pour mot si possible :\n" + faqItems.map((f,i) => "Q"+(i+1)+": "+f.question+"\nR"+(i+1)+": "+f.reponse).join("\n") : ""}
 
 GESTION RDV EXISTANTS :
 - ANNULATION : get_existing_appointment → si RDV trouvé avec cancel_url → SMS lien → "Lien envoyé! Tu veux prendre un nouveau rendez-vous?" → si non → "Bonne journée!" → end_call. Si RDV trouvé sans cancel_url → transfer_to_agent. Si AUCUN RDV trouvé → "Je ne trouve pas de rendez-vous actif à ton nom. Tu veux que je te transfère à l'équipe?" → OUI → transfer_to_agent. NON → "Comment puis-je t'aider?"
@@ -1808,6 +1826,9 @@ ${SALON_LOGO_URL
   <a class="tile tile-admin" href="/admin/salon">
     <div class="tile-n">⚙️</div><div class="tile-l">Config salon</div>
   </a>
+  <a class="tile tile-admin" href="/admin/faq/page" style="background:#d97706;border-color:#d97706">
+    <div class="tile-n" style="font-size:1.1rem">${faqItems.length > 0 ? faqItems.length : "❓"}</div><div class="tile-l" style="color:#fef3c7">FAQ Hélène</div>
+  </a>
 </div>
 
 <!-- Panneaux dépliables -->
@@ -2078,6 +2099,54 @@ async function confirmSave() {
 </html>`);
 });
 
+// ─── Routes FAQ ───────────────────────────────────────────────────────────────
+const checkAdminToken = (req, res) => {
+  const token = req.headers["x-admin-token"] || req.query.token;
+  if (!token || token !== (process.env.ADMIN_TOKEN || "")) {
+    res.status(401).json({ error: "Non autorisé" });
+    return false;
+  }
+  return true;
+};
+
+app.get("/admin/faq", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  res.json({ ok: true, items: faqItems });
+});
+
+app.post("/admin/faq", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const { question, reponse } = req.body || {};
+  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
+  const item = { id: Date.now().toString(), question: question.trim(), reponse: reponse.trim(), createdAt: new Date().toISOString() };
+  faqItems.push(item);
+  saveFaq();
+  console.log(`[FAQ] ✅ Ajout: ${item.question.substring(0,50)}`);
+  res.json({ ok: true, item });
+});
+
+app.put("/admin/faq/:id", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const idx = faqItems.findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Entrée non trouvée" });
+  const { question, reponse } = req.body || {};
+  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
+  faqItems[idx] = { ...faqItems[idx], question: question.trim(), reponse: reponse.trim(), updatedAt: new Date().toISOString() };
+  saveFaq();
+  console.log(`[FAQ] ✅ Modifié: ${faqItems[idx].question.substring(0,50)}`);
+  res.json({ ok: true, item: faqItems[idx] });
+});
+
+app.delete("/admin/faq/:id", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const idx = faqItems.findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "Entrée non trouvée" });
+  const removed = faqItems.splice(idx, 1)[0];
+  saveFaq();
+  console.log(`[FAQ] 🗑 Supprimé: ${removed.question.substring(0,50)}`);
+  res.json({ ok: true });
+});
+
 // ─── Route POST admin/salon/save → Railway API ───────────────────────────────
 app.post("/admin/salon/save", async (req, res) => {
   const token = req.headers["x-admin-token"] || req.query.token;
@@ -2161,6 +2230,235 @@ app.post("/admin/salon/save", async (req, res) => {
     console.error("[RAILWAY] ❌", e.message);
     return res.status(500).json({ error: e.message });
   }
+});
+
+// ─── Page admin FAQ ──────────────────────────────────────────────────────────
+app.get("/admin/faq/page", (req, res) => {
+  res.type("text/html").send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FAQ — ${SALON_NAME}</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:28px 20px}
+.wrap{max-width:760px;margin:0 auto}
+h1{font-size:1.25rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
+.sub{color:#6b7280;font-size:.84rem;margin-bottom:24px}
+.sub a{color:#6c47ff;text-decoration:none}
+.card{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;margin-bottom:12px;overflow:hidden}
+.card-head{display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;user-select:none}
+.card-head:hover{background:#f9f8ff}
+.q-text{flex:1;font-weight:600;font-size:.93rem;color:#1a1a2e}
+.badge-num{background:#ede9fe;color:#6c47ff;font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:10px;min-width:26px;text-align:center}
+.chevron{color:#9ca3af;font-size:.85rem;transition:transform .2s}
+.chevron.open{transform:rotate(180deg)}
+.card-body{display:none;padding:0 18px 16px;border-top:1.5px solid #f3f4f6}
+.card-body.open{display:block}
+.r-text{font-size:.88rem;color:#374151;line-height:1.6;margin:12px 0}
+.actions{display:flex;gap:8px;margin-top:10px}
+.btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:7px;font-size:.82rem;font-weight:600;cursor:pointer;border:none}
+.btn-edit{background:#eff6ff;color:#2563eb}
+.btn-edit:hover{background:#dbeafe}
+.btn-del{background:#fef2f2;color:#dc2626}
+.btn-del:hover{background:#fee2e2}
+.add-card{background:#fff;border:2px dashed #c4b5fd;border-radius:12px;padding:20px 18px;margin-bottom:24px}
+.add-card h2{font-size:.95rem;font-weight:700;color:#6c47ff;margin-bottom:14px}
+label{display:block;font-size:.80rem;font-weight:600;color:#374151;margin-bottom:5px}
+input[type=text],textarea{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none}
+input[type=text]:focus,textarea:focus{border-color:#6c47ff}
+textarea{resize:vertical;min-height:72px}
+.field{margin-bottom:12px}
+.btn-add{background:#6c47ff;color:#fff;padding:9px 22px;font-size:.88rem}
+.btn-add:hover{background:#5538d4}
+.token-bar{display:flex;gap:8px;margin-bottom:20px;align-items:center}
+.token-bar input{flex:1;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem}
+.token-bar input:focus{border-color:#6c47ff;outline:none}
+.alert{padding:10px 14px;border-radius:8px;font-size:.84rem;margin-bottom:14px;display:none}
+.alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
+.alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
+.empty{text-align:center;padding:40px;color:#9ca3af;font-size:.9rem}
+.btn-back-sm{background:#f3f4f6;color:#374151;padding:7px 16px;font-size:.82rem;text-decoration:none;border-radius:8px;font-weight:600;display:inline-block;margin-bottom:20px}
+.btn-back-sm:hover{background:#e5e7eb}
+.edit-form{display:none;padding:12px 0 0}
+.edit-form.open{display:block}
+.edit-form input,.edit-form textarea{margin-bottom:8px}
+.count{color:#9ca3af;font-size:.8rem;margin-bottom:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  ${SALON_LOGO_URL ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:44px;object-fit:contain;margin-bottom:14px;display:block">` : ""}
+  <h1>❓ Foire aux questions</h1>
+  <p class="sub"><a href="/dashboard">← Dashboard</a> &nbsp;·&nbsp; <a href="/admin/salon">⚙️ Config salon</a></p>
+
+  <div id="alertOk" class="alert alert-ok"></div>
+  <div id="alertErr" class="alert alert-err"></div>
+
+  <div class="token-bar">
+    <input type="password" id="tok" placeholder="ADMIN_TOKEN pour modifier/supprimer" autocomplete="off">
+  </div>
+
+  <div class="add-card">
+    <h2>➕ Ajouter une question</h2>
+    <div class="field"><label>Question</label><input type="text" id="newQ" placeholder="Ex: Acceptez-vous les animaux?"></div>
+    <div class="field"><label>Réponse d'Hélène</label><textarea id="newR" placeholder="Ex: Oui, les chiens de petite taille sont les bienvenus!"></textarea></div>
+    <button class="btn btn-add" onclick="addFaq()">➕ Ajouter</button>
+  </div>
+
+  <div id="faqCount" class="count"></div>
+  <div id="faqList"></div>
+</div>
+
+<script>
+let faqData = [];
+
+async function loadFaq() {
+  const tok = document.getElementById("tok").value.trim();
+  try {
+    const r = await fetch("/admin/faq?token=" + encodeURIComponent(tok));
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "Erreur");
+    faqData = j.items;
+    renderFaq();
+  } catch(e) { showErr("Erreur chargement: " + e.message); }
+}
+
+function renderFaq() {
+  const list = document.getElementById("faqList");
+  const count = document.getElementById("faqCount");
+  count.textContent = faqData.length + " question" + (faqData.length !== 1 ? "s" : "") + " dans la FAQ d'Hélène";
+  if (!faqData.length) {
+    list.innerHTML = '<div class="empty">Aucune question pour l'instant — ajoutez-en une ci-dessus.</div>';
+    return;
+  }
+  list.innerHTML = faqData.map((f, i) => \`
+    <div class="card" id="card-\${f.id}">
+      <div class="card-head" onclick="toggle('\${f.id}')">
+        <span class="badge-num">\${i+1}</span>
+        <span class="q-text">\${esc(f.question)}</span>
+        <span class="chevron" id="chev-\${f.id}">▼</span>
+      </div>
+      <div class="card-body" id="body-\${f.id}">
+        <p class="r-text" id="r-\${f.id}">\${esc(f.reponse)}</p>
+        <div class="edit-form" id="edit-\${f.id}">
+          <input type="text" id="eq-\${f.id}" value="\${esc(f.question)}">
+          <textarea id="er-\${f.id}">\${esc(f.reponse)}</textarea>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-add" style="font-size:.8rem;padding:6px 14px" onclick="saveEdit('\${f.id}')">💾 Sauvegarder</button>
+            <button class="btn" style="background:#f3f4f6;color:#374151;font-size:.8rem;padding:6px 12px" onclick="cancelEdit('\${f.id}')">Annuler</button>
+          </div>
+        </div>
+        <div class="actions" id="acts-\${f.id}">
+          <button class="btn btn-edit" onclick="startEdit('\${f.id}')">✏️ Modifier</button>
+          <button class="btn btn-del" onclick="deleteFaq('\${f.id}')">🗑 Supprimer</button>
+        </div>
+      </div>
+    </div>
+  \`).join("");
+}
+
+function esc(s) { return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function toggle(id) {
+  const body = document.getElementById("body-"+id);
+  const chev = document.getElementById("chev-"+id);
+  const open = body.classList.toggle("open");
+  chev.classList.toggle("open", open);
+}
+
+function startEdit(id) {
+  document.getElementById("edit-"+id).classList.add("open");
+  document.getElementById("acts-"+id).style.display = "none";
+  document.getElementById("r-"+id).style.display = "none";
+}
+function cancelEdit(id) {
+  document.getElementById("edit-"+id).classList.remove("open");
+  document.getElementById("acts-"+id).style.display = "";
+  document.getElementById("r-"+id).style.display = "";
+}
+
+function tok() { return document.getElementById("tok").value.trim(); }
+
+function showOk(msg) {
+  const el = document.getElementById("alertOk"); el.textContent = msg; el.style.display = "block";
+  document.getElementById("alertErr").style.display = "none";
+  setTimeout(() => el.style.display = "none", 4000);
+}
+function showErr(msg) {
+  const el = document.getElementById("alertErr"); el.textContent = msg; el.style.display = "block";
+  document.getElementById("alertOk").style.display = "none";
+}
+
+async function addFaq() {
+  const t = tok();
+  if (!t) { showErr("Entre le token admin d'abord."); return; }
+  const q = document.getElementById("newQ").value.trim();
+  const r = document.getElementById("newR").value.trim();
+  if (!q || !r) { showErr("Question et réponse requises."); return; }
+  try {
+    const res = await fetch("/admin/faq?token=" + encodeURIComponent(t), {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ question: q, reponse: r })
+    });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error);
+    faqData.push(j.item);
+    document.getElementById("newQ").value = "";
+    document.getElementById("newR").value = "";
+    renderFaq();
+    showOk("✅ Question ajoutée — Hélène la connaît dès le prochain appel.");
+  } catch(e) { showErr("❌ " + e.message); }
+}
+
+async function saveEdit(id) {
+  const t = tok();
+  if (!t) { showErr("Entre le token admin d'abord."); return; }
+  const q = document.getElementById("eq-"+id).value.trim();
+  const r = document.getElementById("er-"+id).value.trim();
+  if (!q || !r) { showErr("Champs requis."); return; }
+  try {
+    const res = await fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), {
+      method: "PUT", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ question: q, reponse: r })
+    });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error);
+    const idx = faqData.findIndex(f => f.id === id);
+    if (idx >= 0) faqData[idx] = j.item;
+    renderFaq();
+    showOk("✅ Question mise à jour.");
+  } catch(e) { showErr("❌ " + e.message); }
+}
+
+async function deleteFaq(id) {
+  if (!confirm("Supprimer cette question?")) return;
+  const t = tok();
+  if (!t) { showErr("Entre le token admin d'abord."); return; }
+  try {
+    const res = await fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), { method: "DELETE" });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error);
+    faqData = faqData.filter(f => f.id !== id);
+    renderFaq();
+    showOk("✅ Question supprimée.");
+  } catch(e) { showErr("❌ " + e.message); }
+}
+
+// Charger sans token pour afficher (lecture seule OK si token vide → 401 → on gère)
+window.addEventListener("DOMContentLoaded", () => {
+  // Essai initial sans token pour voir si lecture publique activée
+  fetch("/admin/faq?token=").then(r => r.json()).then(j => {
+    if (j.ok) { faqData = j.items; renderFaq(); }
+  }).catch(() => {});
+});
+
+document.getElementById("tok").addEventListener("change", loadFaq);
+document.getElementById("tok").addEventListener("blur", loadFaq);
+</script>
+</body>
+</html>`);
 });
 
 // ─── Routes admin logs ────────────────────────────────────────────────────────
