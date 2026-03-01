@@ -2236,58 +2236,178 @@ app.post("/admin/salon/save", async (req, res) => {
 });
 
 // ─── Page admin FAQ ──────────────────────────────────────────────────────────
+app.get("/admin/faq/script.js", (req, res) => {
+  res.type("application/javascript").send(`
+var faqData = [];
+
+function gettok() {
+  return document.getElementById("tok").value.trim();
+}
+
+function showOk(m) {
+  var e = document.getElementById("alertOk");
+  e.textContent = m; e.style.display = "block";
+  document.getElementById("alertErr").style.display = "none";
+  setTimeout(function() { e.style.display = "none"; }, 4000);
+}
+
+function showErr(m) {
+  var e = document.getElementById("alertErr");
+  e.textContent = m; e.style.display = "block";
+  document.getElementById("alertOk").style.display = "none";
+}
+
+function esc(s) {
+  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderFaq() {
+  var list = document.getElementById("faqList");
+  var cnt = document.getElementById("faqCount");
+  cnt.textContent = faqData.length + " question" + (faqData.length !== 1 ? "s" : "") + " dans la FAQ d'Helene";
+  if (!faqData.length) {
+    list.innerHTML = '<p class="empty">Aucune question pour linstant.</p>';
+    return;
+  }
+  var h = "";
+  for (var i = 0; i < faqData.length; i++) {
+    var f = faqData[i];
+    var id = f.id;
+    h += '<div class="faq-row" id="row-' + id + '">';
+    h += '<div class="faq-head" data-id="' + id + '">';
+    h += '<span class="faq-num">' + (i + 1) + '</span>';
+    h += '<span class="faq-q">' + esc(f.question) + '</span>';
+    h += '<span class="faq-arrow" id="arrow-' + id + '">&#9660;</span>';
+    h += '</div>';
+    h += '<div class="faq-body" id="fbody-' + id + '" style="display:none">';
+    h += '<p class="faq-r">' + esc(f.reponse) + '</p>';
+    h += '<div class="faq-acts">';
+    h += '<button class="btn-sm btn-edit" data-id="' + id + '">✏️ Modifier</button>';
+    h += '<button class="btn-sm btn-del" data-id="' + id + '">🗑 Supprimer</button>';
+    h += '</div>';
+    h += '</div></div>';
+  }
+  list.innerHTML = h;
+
+  // Attacher les events après injection dans le DOM
+  document.querySelectorAll(".faq-head").forEach(function(el) {
+    el.addEventListener("click", function() { toggleFaq(el.getAttribute("data-id")); });
+  });
+  document.querySelectorAll(".btn-edit").forEach(function(el) {
+    el.addEventListener("click", function(e) { e.stopPropagation(); openEditModal(el.getAttribute("data-id")); });
+  });
+  document.querySelectorAll(".btn-del").forEach(function(el) {
+    el.addEventListener("click", function(e) { e.stopPropagation(); deleteFaq(el.getAttribute("data-id")); });
+  });
+}
+
+function toggleFaq(id) {
+  var body = document.getElementById("fbody-" + id);
+  var arrow = document.getElementById("arrow-" + id);
+  if (body.style.display === "none") {
+    body.style.display = "block";
+    arrow.innerHTML = "&#9650;";
+  } else {
+    body.style.display = "none";
+    arrow.innerHTML = "&#9660;";
+  }
+}
+
+function openAddModal() {
+  document.getElementById("modalTitle").textContent = "Ajouter une question";
+  document.getElementById("modalQ").value = "";
+  document.getElementById("modalR").value = "";
+  document.getElementById("modalId").value = "";
+  document.getElementById("modal").style.display = "flex";
+  setTimeout(function() { document.getElementById("modalQ").focus(); }, 50);
+}
+
+function openEditModal(id) {
+  var f = faqData.find(function(x) { return x.id === id; });
+  if (!f) return;
+  document.getElementById("modalTitle").textContent = "Modifier la question";
+  document.getElementById("modalQ").value = f.question;
+  document.getElementById("modalR").value = f.reponse;
+  document.getElementById("modalId").value = id;
+  document.getElementById("modal").style.display = "flex";
+  setTimeout(function() { document.getElementById("modalQ").focus(); }, 50);
+}
+
+function closeModal() {
+  document.getElementById("modal").style.display = "none";
+}
+
+function saveModal() {
+  var t = gettok();
+  if (!t) { showErr("Entre le token admin."); closeModal(); return; }
+  var q = document.getElementById("modalQ").value.trim();
+  var r = document.getElementById("modalR").value.trim();
+  var id = document.getElementById("modalId").value;
+  if (!q || !r) { showErr("Question et reponse requises."); return; }
+
+  var url, method;
+  if (id) {
+    url = "/admin/faq/" + id + "?token=" + encodeURIComponent(t);
+    method = "PUT";
+  } else {
+    url = "/admin/faq?token=" + encodeURIComponent(t);
+    method = "POST";
+  }
+
+  fetch(url, {
+    method: method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question: q, reponse: r })
+  }).then(function(res) {
+    return res.json();
+  }).then(function(j) {
+    if (!j.ok) throw new Error(j.error);
+    closeModal();
+    loadFaq();
+    showOk(id ? "Question mise a jour!" : "Question ajoutee!");
+  }).catch(function(e) {
+    showErr("Erreur: " + e.message);
+  });
+}
+
+function deleteFaq(id) {
+  if (!confirm("Supprimer cette question?")) return;
+  var t = gettok();
+  if (!t) { showErr("Token requis."); return; }
+  fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), { method: "DELETE" })
+  .then(function(res) { return res.json(); })
+  .then(function(j) {
+    if (!j.ok) throw new Error(j.error);
+    faqData = faqData.filter(function(f) { return f.id !== id; });
+    renderFaq();
+    showOk("Question supprimee.");
+  }).catch(function(e) {
+    showErr("Erreur: " + e.message);
+  });
+}
+
+function loadFaq() {
+  fetch("/admin/faq").then(function(r) {
+    return r.json();
+  }).then(function(j) {
+    if (j.ok) { faqData = j.items; renderFaq(); }
+  }).catch(function() {});
+}
+
+// Fermer le modal en cliquant dehors
+document.addEventListener("click", function(e) {
+  var modal = document.getElementById("modal");
+  if (e.target === modal) closeModal();
+});
+
+loadFaq();
+`);
+});
+
 app.get("/admin/faq/page", (req, res) => {
   const logoHtml = SALON_LOGO_URL
-    ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:44px;object-fit:contain;margin-bottom:14px;display:block">`
+    ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:44px;object-fit:contain;margin-bottom:16px;display:block">`
     : "";
-
-  // Script séparé du template pour éviter les conflits de quotes/échappement
-  const faqScript = [
-    'var faqData=[];',
-    'function gettok(){return document.getElementById("tok").value.trim();}',
-    'function showOk(m){var e=document.getElementById("alertOk");e.textContent=m;e.style.display="block";document.getElementById("alertErr").style.display="none";setTimeout(function(){e.style.display="none";},4000);}',
-    'function showErr(m){var e=document.getElementById("alertErr");e.textContent=m;e.style.display="block";document.getElementById("alertOk").style.display="none";}',
-    'function esc(s){return(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}',
-    'function renderFaq(){',
-    '  var list=document.getElementById("faqList");',
-    '  var cnt=document.getElementById("faqCount");',
-    '  cnt.textContent=faqData.length+" question"+(faqData.length!==1?"s":"")+" dans la FAQ";',
-    '  if(!faqData.length){list.innerHTML="<p style=\'text-align:center;color:#9ca3af;padding:30px\'>Aucune question.</p>";return;}',
-    '  var h="";',
-    '  for(var i=0;i<faqData.length;i++){',
-    '    var f=faqData[i];var id=f.id;',
-    '    h+="<div class=&quot;card&quot; data-id=&quot;"+id+"&quot;>";',
-    '    h+="<div class=&quot;card-head&quot; data-action=&quot;toggle&quot; data-id=&quot;"+id+"&quot;>";',
-    '    h+="<span class=&quot;badge-num&quot;>"+(i+1)+"</span>";',
-    '    h+="<span class=&quot;q-text&quot;>"+esc(f.question)+"</span>";',
-    '    h+="<span class=&quot;chevron&quot; id=&quot;chev-"+id+"&quot;>&#9660;</span></div>";',
-    '    h+="<div class=&quot;card-body&quot; id=&quot;body-"+id+"&quot;>";',
-    '    h+="<p class=&quot;r-text&quot; id=&quot;r-"+id+"&quot;>"+esc(f.reponse)+"</p>";',
-    '    h+="<div class=&quot;edit-form&quot; id=&quot;edit-"+id+"&quot;>";',
-    '    h+="<input type=&quot;text&quot; id=&quot;eq-"+id+"&quot; value=&quot;"+esc(f.question)+"&quot;>";',
-    '    h+="<textarea id=&quot;er-"+id+"&quot;>"+esc(f.reponse)+"</textarea>";',
-    '    h+="<div style=&quot;display:flex;gap:8px&quot;>";',
-    '    h+="<button class=&quot;btn btn-add&quot; data-action=&quot;save&quot; data-id=&quot;"+id+"&quot;>Sauvegarder</button>";',
-    '    h+="<button class=&quot;btn btn-cancel&quot; data-action=&quot;cancel&quot; data-id=&quot;"+id+"&quot;>Annuler</button>";',
-    '    h+="</div></div>";',
-    '    h+="<div class=&quot;actions&quot; id=&quot;acts-"+id+"&quot;>";',
-    '    h+="<button class=&quot;btn btn-edit&quot; data-action=&quot;edit&quot; data-id=&quot;"+id+"&quot;>Modifier</button>";',
-    '    h+="<button class=&quot;btn btn-del&quot; data-action=&quot;delete&quot; data-id=&quot;"+id+"&quot;>Supprimer</button>";',
-    '    h+="</div></div></div>";',
-    '  }',
-    '  list.innerHTML=h;',
-    '}',
-    'function toggle(id){var b=document.getElementById("body-"+id);var c=document.getElementById("chev-"+id);var o=b.classList.toggle("open");c.textContent=o?"▲":"▼";}',
-    'function startEdit(id){document.getElementById("edit-"+id).classList.add("open");document.getElementById("acts-"+id).style.display="none";document.getElementById("r-"+id).style.display="none";}',
-    'function cancelEdit(id){document.getElementById("edit-"+id).classList.remove("open");document.getElementById("acts-"+id).style.display="";document.getElementById("r-"+id).style.display="";}',
-    'function loadFaq(){fetch("/admin/faq").then(function(r){return r.json();}).then(function(j){if(j.ok){faqData=j.items;renderFaq();}}).catch(function(){});}',
-    'function addFaq(){var t=gettok();if(!t){showErr("Entre le token admin.");return;}var q=document.getElementById("newQ").value.trim();var r=document.getElementById("newR").value.trim();if(!q||!r){showErr("Question et reponse requises.");return;}fetch("/admin/faq?token="+encodeURIComponent(t),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q,reponse:r})}).then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);faqData.push(j.item);document.getElementById("newQ").value="";document.getElementById("newR").value="";renderFaq();showOk("Question ajoutee!");}).catch(function(e){showErr("Erreur: "+e.message);});}',
-    'function saveEdit(id){var t=gettok();if(!t){showErr("Token requis.");return;}var q=document.getElementById("eq-"+id).value.trim();var r=document.getElementById("er-"+id).value.trim();if(!q||!r){showErr("Champs requis.");return;}fetch("/admin/faq/"+id+"?token="+encodeURIComponent(t),{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({question:q,reponse:r})}).then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);var i=faqData.findIndex(function(f){return f.id===id;});if(i>=0)faqData[i]=j.item;renderFaq();showOk("Mis a jour!");}).catch(function(e){showErr("Erreur: "+e.message);});}',
-    'function deleteFaq(id){if(!confirm("Supprimer?"))return;var t=gettok();if(!t){showErr("Token requis.");return;}fetch("/admin/faq/"+id+"?token="+encodeURIComponent(t),{method:"DELETE"}).then(function(res){return res.json();}).then(function(j){if(!j.ok)throw new Error(j.error);faqData=faqData.filter(function(f){return f.id!==id;});renderFaq();showOk("Supprime!");}).catch(function(e){showErr("Erreur: "+e.message);});}',
-    'document.addEventListener("click",function(e){var el=e.target.closest("[data-action]");if(!el)return;var a=el.getAttribute("data-action");var id=el.getAttribute("data-id");if(a==="toggle")toggle(id);else if(a==="edit")startEdit(id);else if(a==="cancel")cancelEdit(id);else if(a==="save")saveEdit(id);else if(a==="delete")deleteFaq(id);});',
-    'loadFaq();'
-  ].join("\n");
-
   res.type("text/html").send(`<!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -2296,42 +2416,46 @@ app.get("/admin/faq/page", (req, res) => {
 <title>FAQ — ${SALON_NAME}</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:28px 20px}
-.wrap{max-width:760px;margin:0 auto}
-h1{font-size:1.25rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
-.sub{color:#6b7280;font-size:.84rem;margin-bottom:24px}.sub a{color:#6c47ff;text-decoration:none}
-.card{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;margin-bottom:10px;overflow:hidden}
-.card-head{display:flex;align-items:center;gap:12px;padding:14px 18px;cursor:pointer;user-select:none}
-.card-head:hover{background:#f9f8ff}
-.q-text{flex:1;font-weight:600;font-size:.93rem}
-.badge-num{background:#ede9fe;color:#6c47ff;font-size:.72rem;font-weight:700;padding:2px 8px;border-radius:10px;min-width:26px;text-align:center}
-.chevron{color:#9ca3af;font-size:.85rem}
-.card-body{display:none;padding:0 18px 16px;border-top:1.5px solid #f3f4f6}
-.card-body.open{display:block}
-.r-text{font-size:.88rem;color:#374151;line-height:1.6;margin:12px 0}
-.actions{display:flex;gap:8px;margin-top:8px}
-.btn{display:inline-flex;align-items:center;padding:7px 14px;border-radius:7px;font-size:.82rem;font-weight:600;cursor:pointer;border:none}
-.btn-edit{background:#eff6ff;color:#2563eb}.btn-edit:hover{background:#dbeafe}
-.btn-del{background:#fef2f2;color:#dc2626}.btn-del:hover{background:#fee2e2}
-.btn-add{background:#6c47ff;color:#fff}.btn-add:hover{background:#5538d4}
-.btn-cancel{background:#f3f4f6;color:#374151}
-.add-card{background:#fff;border:2px dashed #c4b5fd;border-radius:12px;padding:20px 18px;margin-bottom:20px}
-.add-card h2{font-size:.95rem;font-weight:700;color:#6c47ff;margin-bottom:14px}
-label{display:block;font-size:.80rem;font-weight:600;color:#374151;margin-bottom:5px}
-input[type=text],textarea{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none;box-sizing:border-box}
-input[type=text]:focus,textarea:focus{border-color:#6c47ff}
-textarea{resize:vertical;min-height:72px}
-.field{margin-bottom:12px}
-.token-bar{margin-bottom:18px}
-.token-bar input{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;box-sizing:border-box}
-.token-bar input:focus{border-color:#6c47ff;outline:none}
+body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:24px 16px}
+.wrap{max-width:720px;margin:0 auto}
+h1{font-size:1.2rem;font-weight:700;color:#6c47ff;margin-bottom:3px}
+.sub{color:#6b7280;font-size:.82rem;margin-bottom:20px}.sub a{color:#6c47ff;text-decoration:none}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:12px;flex-wrap:wrap}
+.token-input{flex:1;min-width:200px;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;outline:none}
+.token-input:focus{border-color:#6c47ff}
+.btn-add-main{background:#6c47ff;color:#fff;border:none;padding:9px 20px;border-radius:8px;font-weight:700;font-size:.88rem;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.btn-add-main:hover{background:#5538d4}
 .alert{padding:10px 14px;border-radius:8px;font-size:.84rem;margin-bottom:14px;display:none}
 .alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
 .alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
-.count{color:#9ca3af;font-size:.8rem;margin-bottom:14px}
-.edit-form{display:none;padding:10px 0 4px}
-.edit-form.open{display:block}
-.edit-form input,.edit-form textarea{margin-bottom:8px}
+.count{color:#9ca3af;font-size:.79rem;margin-bottom:10px}
+.empty{text-align:center;color:#9ca3af;padding:40px;font-size:.9rem}
+.faq-row{background:#fff;border:1.5px solid #e5e7eb;border-radius:11px;margin-bottom:8px;overflow:hidden}
+.faq-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
+.faq-head:hover{background:#f9f8ff}
+.faq-num{background:#ede9fe;color:#6c47ff;font-size:.71rem;font-weight:700;padding:2px 8px;border-radius:10px;min-width:24px;text-align:center;flex-shrink:0}
+.faq-q{flex:1;font-weight:600;font-size:.92rem;color:#1a1a2e}
+.faq-arrow{color:#9ca3af;font-size:.8rem;flex-shrink:0}
+.faq-body{padding:0 16px 14px;border-top:1.5px solid #f3f4f6}
+.faq-r{font-size:.87rem;color:#374151;line-height:1.6;margin:12px 0 10px}
+.faq-acts{display:flex;gap:8px}
+.btn-sm{padding:6px 14px;border-radius:7px;font-size:.8rem;font-weight:600;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:4px}
+.btn-edit{background:#eff6ff;color:#2563eb}.btn-edit:hover{background:#dbeafe}
+.btn-del{background:#fef2f2;color:#dc2626}.btn-del:hover{background:#fee2e2}
+/* Modal */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:14px;padding:28px 24px;max-width:480px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,.18)}
+.modal h2{font-size:1.05rem;font-weight:700;color:#1a1a2e;margin-bottom:18px}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.79rem;font-weight:600;color:#374151;margin-bottom:5px}
+.field input,.field textarea{width:100%;padding:9px 11px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none}
+.field input:focus,.field textarea:focus{border-color:#6c47ff}
+.field textarea{resize:vertical;min-height:80px}
+.modal-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}
+.btn-save{background:#6c47ff;color:#fff;border:none;padding:9px 22px;border-radius:8px;font-weight:700;font-size:.88rem;cursor:pointer}
+.btn-save:hover{background:#5538d4}
+.btn-cancel-modal{background:#f3f4f6;color:#374151;border:none;padding:9px 16px;border-radius:8px;font-size:.88rem;cursor:pointer}
 </style>
 </head>
 <body>
@@ -2339,21 +2463,40 @@ textarea{resize:vertical;min-height:72px}
   ${logoHtml}
   <h1>❓ Foire aux questions</h1>
   <p class="sub"><a href="/dashboard">← Dashboard</a> &nbsp;·&nbsp; <a href="/admin/salon">⚙️ Config salon</a></p>
+
   <div id="alertOk" class="alert alert-ok"></div>
   <div id="alertErr" class="alert alert-err"></div>
-  <div class="token-bar">
-    <input type="password" id="tok" placeholder="ADMIN_TOKEN pour ajouter / modifier / supprimer" autocomplete="off">
+
+  <div class="topbar">
+    <input type="password" id="tok" class="token-input" placeholder="ADMIN_TOKEN" autocomplete="off">
+    <button class="btn-add-main" onclick="openAddModal()">➕ Ajouter une question</button>
   </div>
-  <div class="add-card">
-    <h2>➕ Ajouter une question</h2>
-    <div class="field"><label>Question</label><input type="text" id="newQ" placeholder="Ex: Acceptez-vous les animaux?"></div>
-    <div class="field"><label>Reponse d'Helene</label><textarea id="newR" placeholder="Ex: Oui, les chiens calmes sont les bienvenus!"></textarea></div>
-    <button class="btn btn-add" onclick="addFaq()">➕ Ajouter</button>
-  </div>
+
   <div id="faqCount" class="count"></div>
   <div id="faqList"></div>
 </div>
-<script>${faqScript}</script>
+
+<!-- Modal ajouter/modifier -->
+<div class="modal-bg" id="modal">
+  <div class="modal">
+    <h2 id="modalTitle">Ajouter une question</h2>
+    <input type="hidden" id="modalId">
+    <div class="field">
+      <label>Question</label>
+      <input type="text" id="modalQ" placeholder="Ex: Acceptez-vous les animaux?">
+    </div>
+    <div class="field">
+      <label>Reponse d'Helene</label>
+      <textarea id="modalR" placeholder="Ex: Oui, les chiens calmes sont les bienvenus!"></textarea>
+    </div>
+    <div class="modal-btns">
+      <button class="btn-cancel-modal" onclick="closeModal()">Annuler</button>
+      <button class="btn-save" onclick="saveModal()">💾 Sauvegarder</button>
+    </div>
+  </div>
+</div>
+
+<script src="/admin/faq/script.js"></script>
 </body>
 </html>`);
 });
