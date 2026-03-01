@@ -718,6 +718,7 @@ MAIS si le mot apparaît dans une question ou demande de service ("qui sont les 
 Règle simple : est-ce que le client DEMANDE À PARLER à quelqu'un? OUI → transfert. NON → réponds.
 
 COMPORTEMENT FONDAMENTAL :
+- Tu réponds TOUJOURS quand le client parle — jamais de silence radio après une réponse. Si le client dit "ok", "parfait", "merci", "oui", "non", "d'accord" → accuse réception brièvement ("Parfait!", "Très bien!", "Noté!") puis continue naturellement.
 - Tu réponds UNIQUEMENT à ce que le client vient de dire. Rien de plus.
 - Après chaque phrase ou question, tu ARRÊTES de parler et tu ATTENDS.
 - Tu ne remplis JAMAIS le silence. Le silence est normal au téléphone.
@@ -797,7 +798,8 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    ⚠️ RÈGLE ABSOLUE : cette étape N'EXISTE PAS pour un client existant. Si tu as un email dans le dossier → INTERDIT de demander le numéro de cellulaire. Saute à l'étape 8 immédiatement.
    → Seulement si nouveau client (aucun dossier trouvé) : "Quel est ton numéro de cellulaire?"
    → EXTRACTION CHIFFRES : le client peut dire "mon numéro est le 514 894 5221" — extrait UNIQUEMENT les chiffres, ignore les mots autour.
-   → Passe les chiffres à normalize_and_confirm_phone → confirme : "J'ai le [numéro formaté] — c'est bien ça?"
+   → DÈS que le client dit des chiffres → appelle normalize_and_confirm_phone IMMÉDIATEMENT, puis dis le numéro reçu en 3 groupes sans attendre. Ne jamais rester silencieux après que le client donne son numéro.
+   → Répète TOUJOURS en 3 groupes : "[3 chiffres], [3 chiffres], [4 chiffres] — c'est bien ça?" Exemple : "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un — c'est bien ça?"
    → Si le client dit NON → demande une 2e fois : "Peux-tu me le répéter?" → normalize_and_confirm_phone → confirme à nouveau.
    → Si le client dit NON une 2e fois → "Je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
    → Si le client dit qu'il n'a PAS de cellulaire → "Pas de problème, je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
@@ -990,7 +992,7 @@ const TOOLS = [
   {
     type: "function",
     name: "transfer_to_agent",
-    description: "Transfère à un humain. SEULEMENT si: (1) le client demande explicitement un agent/humain, (2) après 2 tentatives Hélène ne comprend toujours pas, (3) service non supporté (coloration etc). NE PAS utiliser parce que la réponse est vague ou imprécise — interpréter naturellement d'abord.",
+    description: "Transfère à un humain. SEULEMENT si: (1) le client demande explicitement un agent/humain, (2) après 2 tentatives Hélène ne comprend toujours pas, (3) service non supporté (coloration etc). JAMAIS pour: une préférence de date, d'heure, de semaine, un changement de disponibilité, une question sur les services — dans ces cas interpréter et agir directement.",
     parameters: { type: "object", properties: {
       raison: { type: "string", enum: ["client", "erreur", "incomprehension", "service_non_supporte"], description: "Raison du transfert. 'client' = client a demandé. 'erreur' = erreur système/booking. 'incomprehension' = Hélène ne comprend pas. 'service_non_supporte' = coloration etc." }
     }, required: [] },
@@ -1253,12 +1255,14 @@ async function runTool(name, args, session) {
       valid: false,
       message: "Numéro invalide — demande au client de répéter.",
     };
+    const digs = phone.replace(/\D/g,"").slice(-10);
+    const spoken = digs.slice(0,3) + " " + digs.slice(3,6) + " " + digs.slice(6);
     return {
       valid: true,
       phone,
       formatted: fmtPhone(phone),
-      digits_spoken: fmtPhone(phone).replace(/\D/g, "").split("").join("-"),
-      message: `Numéro normalisé : ${fmtPhone(phone)}. Répète ce numéro au client chiffre par chiffre pour confirmation.`,
+      spoken_groups: spoken,
+      message: `Numéro reçu : ${spoken}. Répète IMMÉDIATEMENT au client en 3 groupes : "${digs.slice(0,3)}, ${digs.slice(3,6)}, ${digs.slice(6)} — c'est bien ça?" Attends OUI ou NON.`,
     };
   }
 
@@ -1782,6 +1786,7 @@ app.get("/dashboard", (req, res) => {
 ${SALON_LOGO_URL
     ? `<div style="margin-bottom:12px"><img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:52px;max-width:180px;object-fit:contain"></div>`
     : ""}<h1>${SALON_LOGO_URL ? "" : "✂️ "}${SALON_NAME} — Dashboard appels</h1>
+  <div style="font-size:.72rem;color:#9ca3af;margin-top:-8px;margin-bottom:4px">v23 · 1 Mar 2026</div>
 <p class="sub">
   Les ${logs.length} derniers appels (max ${MAX_LOGS})
   &nbsp;·&nbsp;<a href="/dashboard">Rafraîchir</a>
