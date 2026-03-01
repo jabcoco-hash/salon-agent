@@ -827,7 +827,8 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
 4. CONFIRMATION CRÉNEAU (STATE = CONFIRM_SLOT) :
    → "[Service] le [jour complet] à [heure], avec [coiffeuse] — ça te convient?"
    → Si coiffeuses_dispo vide → omets la coiffeuse.
-   → Attends OUI. Ensuite → dis "Un instant, je finalise ta réservation." → passe à l'étape 5 IMMÉDIATEMENT.
+   → Attends OUI. Ensuite → dis UNIQUEMENT "Super!" et passe à l'étape 5 IMMÉDIATEMENT.
+   → NE PAS dire "je finalise ta réservation" ici — ce sera dit à l'étape 8 seulement, après avoir toutes les infos.
 
 5. DOSSIER (après OUI confirmation créneau) :
    → Si prefetch fourni → email et nom connus → SAUTE à l'étape 8.
@@ -836,9 +837,9 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
    → Client non trouvé → étape 5b.
 
 5b. COLLECTE NOM — NOUVEAU CLIENT SEULEMENT (STATE = NEW_CLIENT_INFO) :
-   → "Quel est ton prénom?"
+   → Dis EXACTEMENT : "Je ne semble pas avoir de dossier à ton nom — pas de problème, je vais en créer un! Quel est ton prénom?"
    → Client répond → IMMÉDIATEMENT : "Et ton nom de famille?"
-   → Client répond → IMMÉDIATEMENT, transition fluide : "[prénom] [nom], super! Et pour t'envoyer la confirmation, quel est ton numéro de cellulaire?" → étape 6.
+   → Client répond → IMMÉDIATEMENT, transition fluide : "[prénom] [nom], super! Et pour t'envoyer ta confirmation, quel est ton numéro de cellulaire?" → étape 6.
 
 6. NUMÉRO CELLULAIRE — NOUVEAU CLIENT SEULEMENT :
    ⚠️ INTERDIT si client existant.
@@ -1062,25 +1063,21 @@ async function runTool(name, args, session) {
       // Coiffeuse sera mise à jour dans send_booking_link depuis coiffeuses_dispo si besoin
       if (!cl.demandes.includes("rdv")) cl.demandes.push("rdv");
       logEvent(sid, "tool", `Recherche créneaux — service:${args.service}${args.coiffeuse ? " coiffeuse:"+args.coiffeuse : ""}${args.date_debut ? " date:"+args.date_debut : ""}`);
-      logRaw(sid, `🔧 get_available_slots service=${args.service}${args.coiffeuse?" coiffeuse="+args.coiffeuse:""}${args.date_debut?" date="+args.date_debut:""}`);
-    } else if (name === "get_salon_info") {
+          } else if (name === "get_salon_info") {
       if (!cl.demandes.includes(args.topic)) cl.demandes.push(args.topic);
       logEvent(sid, "tool", `Info salon demandée : ${args.topic}`);
     } else if (name === "lookup_existing_client") {
       logEvent(sid, "tool", "Recherche dossier client");
-      logRaw(sid, "🔍 lookup_existing_client");
     } else if (name === "send_booking_link") {
       cl.service    = args.service || cl.service;
       cl.coiffeuse  = args.coiffeuse || cl.coiffeuse;
       cl.slot       = args.slot_iso || null;
       cl.clientNom  = args.name || null;
       logEvent(sid, "booking", `Envoi confirmation — ${args.name} | ${args.service} | ${args.slot_iso}`);
-      logRaw(sid, `✅ send_booking_link — ${args.name} | ${args.service} | ${args.slot_iso}`);
     } else if (name === "end_call") {
       logEvent(sid, "info", "end_call déclenché");
     } else if (name === "transfer_to_agent") {
       logEvent(sid, "warn", "Transfert agent demandé");
-      logRaw(sid, "🔀 transfer_to_agent");
     }
   }
 
@@ -1276,7 +1273,7 @@ async function runTool(name, args, session) {
     }
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
-      if (cl) { cl.clientNom = client.name; cl.clientType = "existant"; logEvent(sid, "info", `Client trouvé: ${client.name}`); logRaw(sid, `👤 Client existant: ${client.name}`); }
+      if (cl) { cl.clientNom = client.name; cl.clientType = "existant"; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
       const prefSuggestion = client.typeCoupe || client.coiffeuse
         ? ` Désires-tu prendre rendez-vous pour une ${client.typeCoupe || "coupe"}${client.coiffeuse ? " avec " + client.coiffeuse : ""}?`
         : "";
@@ -1328,7 +1325,7 @@ async function runTool(name, args, session) {
       phone,
       formatted: fmtPhone(phone),
       spoken_groups: g1 + " " + g2 + " " + g3,
-      message: `Numéro reçu. Dis IMMÉDIATEMENT : "${g1}, ${g2}, ${g3} — c'est bien ça?" — UN chiffre à la fois, séparés par une courte pause. Attends OUI ou NON.`,
+      message: `Numéro reçu. Dis IMMÉDIATEMENT : "Super! J'ai bien noté. Pour confirmer, c'est bien le ${g1}, ${g2}, ${g3}?" — chiffre par chiffre, courte pause entre chaque groupe. Attends OUI ou NON.`,
     };
   }
 
@@ -1715,18 +1712,18 @@ app.get("/dashboard", (req, res) => {
     <details class="call-card">
       <summary>
         <span class="badge" style="background:${badgeColor(log.result)}">${log.result}</span>
-        <span class="caller">${log.callerNumber || "inconnu"}</span>
+        <span class="caller">${log.callerNumber ? "######" + log.callerNumber.replace(/\D/g,"").slice(-4) : "inconnu"}</span>
         <span class="time">${fmtTime(log.startedAt)}</span>
         <span class="dur">${duration(log)}</span>
         ${log.clientNom ? `<span class="tag tag-nom">👤 ${log.clientNom}</span>` : ""}
         ${log.clientType === "existant" ? `<span class="tag tag-existant">⭐ Client existant</span>` : log.clientType === "nouveau" ? `<span class="tag tag-nouveau">🆕 Nouveau client</span>` : ""}
         ${log.service ? `<span class="tag tag-svc">✂️ ${log.service}${log.coiffeuse ? " · "+log.coiffeuse : ""}</span>` : ""}
         ${log.slot ? `<span class="tag tag-slot">📅 ${log.slot.replace("T"," ").slice(0,16)}</span>` : ""}
-        ${log.demandes?.length ? `<span class="tag tag-dem">💬 ${log.demandes.join(", ")}</span>` : ""}
+        ${log.demandes?.length ? `<span class="tag tag-dem" title="Mots-clés détectés dans la conversation — aide à identifier les besoins récurrents">🔍 ${log.demandes.join(", ")}</span>` : ""}
       </summary>
       ${log.resumeClient?.length ? `
       <div class="resume">
-        <div class="resume-title">🗣️ Ce que le client a dit</div>
+        <div class="resume-title">🗣️ Transcription client <span style="font-size:.68rem;color:#9ca3af;font-weight:400">(reconnaissance vocale Whisper — peut contenir des erreurs)</span></div>
         ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
       </div>` : ""}
       ${log.unanswered_questions?.length ? `
@@ -1752,11 +1749,25 @@ app.get("/dashboard", (req, res) => {
             <span class="emsg">${e.msg}</span>
           </div>`).join("")}
       </div>
-      ${log.serverLog && log.serverLog.length ? `
-      <div style="padding:10px 14px;background:#0f172a;border-top:2px solid #1e293b">
-        <div style="font-size:.68rem;font-weight:700;color:#475569;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">📋 Log Railway</div>
-        <pre style="font-size:.71rem;color:#94a3b8;line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:0;font-family:monospace">${log.serverLog.join("\n")}</pre>
-      </div>` : ""}
+      ${(() => {
+        if (!log.serverLog || !log.serverLog.length) return "";
+        const colorLine = (line) => {
+          const s = line.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+          let c = "#94a3b8";
+          if (s.includes("[OAI]") || s.includes("[TOOL]") || s.includes("[TOOL RESULT]")) c = "#a78bfa";
+          else if (s.includes("[SLOTS]") || s.includes("[CALENDLY]")) c = "#60a5fa";
+          else if (s.includes("[BOOKING]") || s.includes("✅")) c = "#4ade80";
+          else if (s.includes("[LOOKUP]") || s.includes("[GOOGLE]")) c = "#fbbf24";
+          else if (s.includes("[SMS]") || s.includes("[Twilio]") || s.includes("[VOICE]")) c = "#f472b6";
+          else if (s.includes("[ERREUR]") || s.includes("[AVERT]")) c = "#f87171";
+          return "<div style=\"color:" + c + ";padding:1px 0;white-space:pre-wrap;word-break:break-all\">" + s + "</div>";
+        };
+        return "<div style=\"padding:10px 14px 14px;background:#0c1220;border-top:2px solid #1e293b;border-radius:0 0 10px 10px\">"
+          + "<div style=\"font-size:.68rem;font-weight:700;color:#4a6fa5;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px\">&#9679; Logs Railway — " + log.serverLog.length + " entrées</div>"
+          + "<div style=\"font-family:monospace;font-size:.72rem;line-height:1.7\">"
+          + log.serverLog.map(colorLine).join("")
+          + "</div></div>";
+      })()}
     </details>`).join("") || "<p class='empty'>Aucun appel enregistré.</p>";
 
   res.type("text/html").send(`<!DOCTYPE html>
@@ -2868,7 +2879,7 @@ app.post("/voice", (req, res) => {
   });
   startCallLog(CallSid, callerNorm);
   logEvent(CallSid, "info", `Appel entrant de ${callerNorm}`);
-  logRaw(CallSid, `📞 Appel entrant de ${callerNorm}`);
+  const callerMasked = callerNorm ? "######" + callerNorm.replace(/\D/g,"").slice(-4) : "inconnu";
 
   const twiml   = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
@@ -2977,7 +2988,7 @@ wss.on("connection", (twilioWs) => {
         const isArtefact = !txt || txt.length < 2 || /^[.!?,\s]+$/.test(txt);
         if (txt && !isArtefact && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "client", txt);
-          logRaw(session.twilioCallSid, `🙋 Client: "${txt}"`);
+          // transcription client loguée dans events — pas dans serverLog (doublon)
           // Détection de sujets libres dans le texte
           const cl = callLogs.get(session.twilioCallSid);
           if (cl) {
@@ -3021,7 +3032,7 @@ wss.on("connection", (twilioWs) => {
         const txt = ev.transcript?.trim();
         if (txt && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "helene", txt);
-          logRaw(session.twilioCallSid, `🤖 Hélène: "${txt.substring(0,120)}${txt.length>120?"...":""}"`);
+          // transcription Hélène loguée dans events — pas dans serverLog (doublon)
           // Détecter si Hélène dit qu'elle ne peut pas répondre → unanswered_questions (A1)
           const tl = txt.toLowerCase();
           if (tl.includes("je ne peux pas répondre") || tl.includes("je ne sais pas") || tl.includes("je peux pas répondre à ça") || tl.includes("je suis désolée, je ne")) {
@@ -3479,11 +3490,30 @@ function html410() {
 }
 
 // ─── Logs colorés ─────────────────────────────────────────────────────────────
-const R = "[31m", G = "[32m", Y = "[33m", X = "[0m";
+const R = "\x1b[31m", G = "\x1b[32m", Y = "\x1b[33m", X = "\x1b[0m";
+const _origLog   = console.log.bind(console);
 const _origError = console.error.bind(console);
 const _origWarn  = console.warn.bind(console);
-console.error = (...a) => _origError(R + "[ERREUR]", ...a, X);
-console.warn  = (...a) => _origWarn(Y  + "[AVERT]",  ...a, X);
+
+// Capturer les logs Railway dans le serverLog de l'appel actif
+const CALL_LOG_PREFIXES = ["[OAI]","[TOOL]","[SLOTS]","[LOOKUP]","[BOOKING]","[GOOGLE]","[SMS]","[Twilio]","[CALENDLY]","[VOICE]","[TOOL RESULT]"];
+function captureToCallLog(line) {
+  try {
+    if (!CALL_LOG_PREFIXES.some(p => line.includes(p))) return;
+    for (const [, sess] of sessions) {
+      if (sess?.twilioCallSid && callLogs.has(sess.twilioCallSid)) {
+        logRaw(sess.twilioCallSid, line);
+        break;
+      }
+    }
+  } catch {}
+}
+console.log = (...args) => {
+  _origLog(...args);
+  captureToCallLog(args.map(a => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" "));
+};
+console.error = (...a) => { _origError(R + "[ERREUR]", ...a, X); captureToCallLog("[ERREUR] " + a.map(x => typeof x === "object" ? JSON.stringify(x) : String(x)).join(" ")); };
+console.warn  = (...a) => { _origWarn(Y  + "[AVERT]",  ...a, X); captureToCallLog("[AVERT] " + a.map(x => typeof x === "object" ? JSON.stringify(x) : String(x)).join(" ")); };
 
 // ─── Démarrage ────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
