@@ -629,11 +629,13 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    • "autre"            = coupe autre (non binaire, queer, trans, etc.)
 
    → Si le client dit déjà service + coiffeuse + date → passe directement à l'étape 3.
-   → Sinon demande le service si inconnu. Ex: "C'est pour une coupe homme, femme, enfant ou autre service?"
+   → ORDRE OBLIGATOIRE avant get_available_slots : 1) service connu? sinon demande. 2) coiffeuse connue? sinon demande. 3) SEULEMENT après → cherche les créneaux.
+   → Ne jamais appeler get_available_slots sans connaître le service. Ex: "Le plus tôt possible" → demande d'abord le service, ensuite cherche.
+   → Demande service : "C'est pour une coupe homme, femme, enfant ou autre service?"
    → Coloration seule ou mise en plis seule SANS coupe → transfer_to_agent. Mais "coupe + coloration" ou "coupe + mise en plis" → service "femme_coloration" ou "femme_plis".
    → Coupe non binaire, queer, trans, non genrée, LGBTQ+ → service "autre" directement, pas de transfert.
-   → Si service connu mais coiffeuse inconnue → "Tu as une préférence pour une coiffeuse?"
-   → "peu importe", "n'importe qui", "pas de préférence" → PAS de paramètre coiffeuse.
+   → Si service connu mais coiffeuse non précisée → TOUJOURS demander : "Tu as une préférence pour une coiffeuse en particulier?" — s'applique à TOUS les services (homme, femme, femme_coloration, femme_plis, enfant, autre).
+   → "peu importe", "n'importe qui", "pas de préférence", "non" → PAS de paramètre coiffeuse.
    → CHANGER DE COIFFEUSE (B7) : "autre coiffeuse", "pas avec [nom]" → accepte, demande "Tu as quelqu'un en tête?" et continue.
    → LISTER LES SERVICES : si le client demande "c'est quoi vos services", "qu'est-ce que vous offrez", "qu'est-ce que vous faites" → appelle get_coiffeuses et liste les services_offerts sans répétition. Ne liste jamais le même service deux fois.
 
@@ -654,6 +656,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Heure demandée non disponible : "Désolée, [heure] est déjà pris. J'ai plutôt [liste] — ça te convient?"
    → Si le client demande quelles coiffeuses sont disponibles → indique les noms dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends les mêmes créneaux.
    → Client insiste 2e fois sur même heure → "Je comprends que ce soit décevant! Je vais te transférer à notre équipe." → transfer_to_agent.
+   → AUCUN CRÉNEAU disponible pour la période demandée → dis : "Je n'ai pas de disponibilité [cette semaine / ce jour-là]. Je peux regarder [la semaine prochaine / une autre journée] si tu veux?" → si OUI → rappelle get_available_slots avec offset_semaines:1 ou nouvelle date. Si NON → transfer_to_agent.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 4. CONFIRMATION créneau :
@@ -661,13 +664,14 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Attends OUI avant de continuer.
 
 5. DOSSIER :
-   → Si le système a fourni les infos client en début d'appel → NE PAS appeler lookup_existing_client. Utilise l'email et nom connus → passe à l'étape 8.
+   → Si le système a fourni les infos client en début d'appel (prefetch) → NE PAS appeler lookup_existing_client. Email et nom sont déjà connus → SAUTE directement à l'étape 8. AUCUNE question.
    → Sinon → appelle lookup_existing_client silencieusement.
-   → Trouvé → passe à l'étape 8. ZÉRO question supplémentaire.
-   → Non trouvé → demande le prénom et nom.
+   → Trouvé → SAUTE directement à l'étape 8. ZÉRO question (pas de nom, pas de numéro, pas de courriel).
+   → Non trouvé → demande le prénom et nom, puis continue à l'étape 6.
 
-6. NUMÉRO (NOUVEAU CLIENT SEULEMENT) :
-   → "Quel est ton numéro de cellulaire?" → normalize_and_confirm_phone → "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
+6. NUMÉRO (NOUVEAU CLIENT SEULEMENT — CLIENT SANS DOSSIER) :
+   ⚠️ RÈGLE ABSOLUE : cette étape N'EXISTE PAS pour un client existant. Si tu as un email dans le dossier → INTERDIT de demander le numéro de cellulaire. Saute à l'étape 8 immédiatement.
+   → Seulement si nouveau client (aucun dossier trouvé) : "Quel est ton numéro de cellulaire?" → normalize_and_confirm_phone → "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
 
 7. ÉVÉNEMENT SPÉCIAL (B5) :
    → Si le client mentionne mariage, graduation, bal, événement, party, shooting photo → "Super! Je vais noter ça pour l'équipe."
@@ -694,7 +698,7 @@ FAQ SALON (B3+B4) — réponds directement sans outil :
 - Durée service (B4) : "En général une coupe prend environ 30 à 45 minutes. Pour plus de détails je peux te transférer à l'équipe."
 
 GESTION RDV EXISTANTS :
-- ANNULATION : get_existing_appointment → si cancel_url → SMS lien → "Lien envoyé! Tu veux prendre un nouveau RDV?" → si non → end_call. Si pas de lien → transfer_to_agent.
+- ANNULATION : get_existing_appointment → si RDV trouvé avec cancel_url → SMS lien → "Lien envoyé! Tu veux prendre un nouveau rendez-vous?" → si non → "Bonne journée!" → end_call. Si RDV trouvé sans cancel_url → transfer_to_agent. Si AUCUN RDV trouvé → "Je ne trouve pas de rendez-vous actif à ton nom. Tu veux que je te transfère à l'équipe?" → OUI → transfer_to_agent. NON → "Comment puis-je t'aider?"
 - MODIFICATION : get_existing_appointment → confirme date → "Pour modifier, utilise le lien dans ton texto, ou je te transfère." → transfer_to_agent si besoin.
 - CONFIRMATION RDV : get_existing_appointment → lis date → "Bonne journée!" → end_call.
 - RETARD : "Je vais avertir l'équipe." → transfer_to_agent.
@@ -721,6 +725,8 @@ RÈGLES ABSOLUES :
 - SILENCE ou BRUIT : si la transcription ressemble à un bruit, une interjection sans sens, ou un mot seul → ignore-le et attends que le client parle vraiment.
 - NE JAMAIS dire "je vais vérifier si tu as un dossier" si déjà chargé en début d'appel.
 - APRÈS CHOIX DE CRÉNEAU : ne re-demande JAMAIS le service ou la coiffeuse déjà connus.
+- CLIENT EXISTANT (prefetch ou lookup trouvé) : NE JAMAIS demander le nom, le numéro ou l'email. Ces infos sont déjà connues. Appelle send_booking_link directement avec les infos du dossier.
+- CLIENT AVEC DOSSIER : JAMAIS demander le numéro de cellulaire, le nom ou le courriel. Ces infos sont dans le dossier. Aller directement à l'envoi (étape 8).
 
 TRANSFERT À UN HUMAIN — SEULEMENT si le client demande EXPLICITEMENT :
 - Mots clés clairs : "agent", "humain", "parler à quelqu'un", "parler à une personne", "réceptionniste", "Équipe"
@@ -777,19 +783,19 @@ const TOOLS = [
   {
     type: "function",
     name: "send_booking_link",
-    description: "Envoie le SMS de confirmation et crée le RDV. OBLIGATOIRE : tu dois avoir service + slot_iso + name + phone avant d'appeler. Si l'un de ces champs manque, NE PAS appeler — retourne demander l'info manquante au client d'abord.",
+    description: "Envoie la confirmation et crée le RDV Calendly. Appelle dès que le client a confirmé son créneau (OUI à l'étape de confirmation). CLIENT EXISTANT (prefetch ou lookup trouvé) : appelle IMMÉDIATEMENT — le serveur auto-complète nom/email/phone depuis le dossier, NE PAS redemander ces infos. NOUVEAU CLIENT : tu dois avoir name + phone avant d'appeler.",
     parameters: {
       type: "object",
       properties: {
-        service:    { type: "string", enum: ["homme", "femme", "nonbinaire"], description: "OBLIGATOIRE — type de coupe" },
-        slot_iso:   { type: "string", description: "OBLIGATOIRE — date ISO du créneau choisi" },
-        name:       { type: "string", description: "OBLIGATOIRE — nom confirmé du client dans cet appel" },
-        phone:      { type: "string", description: "OBLIGATOIRE — numéro validé E.164 ou 10 chiffres" },
-        email:      { type: "string", description: "Courriel si déjà connu (client existant). Omets si inconnu." },
-        coiffeuse:       { type: "string", description: "Prénom de la coiffeuse choisie, si applicable." },
-        event_type_uri:  { type: "string", description: "URI exact de l'event type retourné par get_available_slots pour ce créneau. Toujours passer ce paramètre si disponible — c'est l'URI qui garantit que le booking se fait sur le bon calendrier." },
+        service:        { type: "string", enum: ["homme", "femme", "femme_coloration", "femme_plis", "femme_color_plis", "enfant", "autre"], description: "OBLIGATOIRE — type de service" },
+        slot_iso:       { type: "string", description: "OBLIGATOIRE — date ISO du créneau choisi" },
+        name:           { type: "string", description: "Nom du client. OPTIONNEL si client existant — le serveur le récupère automatiquement du dossier." },
+        phone:          { type: "string", description: "Numéro de téléphone. OPTIONNEL si client existant — le serveur utilise le numéro appelant." },
+        email:          { type: "string", description: "Courriel si connu. OPTIONNEL si client existant — le serveur le récupère du dossier." },
+        coiffeuse:      { type: "string", description: "Prénom de la coiffeuse choisie, si applicable." },
+        event_type_uri: { type: "string", description: "URI exact de l'event type retourné par get_available_slots. Toujours passer si disponible." },
       },
-      required: ["service", "slot_iso", "name", "phone"],
+      required: ["service", "slot_iso"],
     },
   },
   {
@@ -1129,16 +1135,22 @@ async function runTool(name, args, session) {
   }
 
   if (name === "send_booking_link") {
+    // ── Auto-compléter depuis le prefetch si le modèle n'a pas passé les infos ──
+    const prefetch = session?.prefetchedClient;
+    if (!args.name  && prefetch?.name)  args.name  = prefetch.name;
+    if (!args.email && prefetch?.email) args.email = prefetch.email;
+    if (!args.phone && prefetch?.phone) args.phone = prefetch.phone;
+
     console.log(`[BOOKING] Début — service:${args.service} slot:${args.slot_iso} name:${args.name} phone:${args.phone} email:${args.email || "inconnu"}`);
 
     // Valider les champs obligatoires
     const missing = [];
-    if (!args.service)   missing.push("service (homme/femme)");
-    if (!args.slot_iso)  missing.push("créneau choisi (slot_iso)");
-    if (!args.name)      missing.push("nom du client");
+    if (!args.service)  missing.push("service");
+    if (!args.slot_iso) missing.push("créneau (slot_iso)");
+    if (!args.name)     missing.push("nom du client");
     if (missing.length > 0) {
       console.error(`[BOOKING] ❌ Champs manquants: ${missing.join(", ")}`);
-      return { error: `Informations manquantes: ${missing.join(", ")}. Assure-toi d'avoir complété toutes les étapes avant d'appeler send_booking_link.` };
+      return { error: `Informations manquantes: ${missing.join(", ")}.` };
     }
 
     const phone = normalizePhone(args.phone) || normalizePhone(session?.callerNumber || "");
