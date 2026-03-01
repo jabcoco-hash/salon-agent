@@ -657,6 +657,13 @@ INFORMATIONS SALON :
 - Accessibilité : ${SALON_ACCESS}
 - Numéro appelant : ${callerNumber || "inconnu"}
 
+⚡ PRIORITÉ ABSOLUE — LIS AVANT TOUT :
+TRANSFERT IMMÉDIAT si le client exprime CLAIREMENT le désir de parler à un humain. Deux cas :
+1. MOT ISOLÉ (1-3 mots sans contexte) : "équipe", "agent", "humain", "transfert", "réceptionniste" → transfert immédiat.
+2. PHRASE EXPLICITE de demande : "je veux parler à quelqu'un", "peux-tu me transférer", "parle-moi à une personne", "je veux parler à l'équipe", "parler au salon", "parler au propriétaire/patron/gérant" → transfert immédiat.
+MAIS si le mot apparaît dans une question ou demande de service ("qui sont les membres de l'équipe?", "l'équipe est disponible quand?", "c'est quoi votre équipe?") → NE PAS transférer, répondre normalement.
+Règle simple : est-ce que le client DEMANDE À PARLER à quelqu'un? OUI → transfert. NON → réponds.
+
 COMPORTEMENT FONDAMENTAL :
 - Tu réponds UNIQUEMENT à ce que le client vient de dire. Rien de plus.
 - Après chaque phrase ou question, tu ARRÊTES de parler et tu ATTENDS.
@@ -666,6 +673,7 @@ COMPORTEMENT FONDAMENTAL :
 - INTERRUPTION (B8) : si le client parle pendant que tu parles, arrête-toi immédiatement, écoute, puis reprends selon ce qu'il vient de dire. Ne répète pas ta phrase précédente.
 - ATTENTE RÉPONSE ABSOLUE : après chaque question ou phrase, tu ne prononces AUCUN mot tant que le client n'a pas répondu. Zéro anticipation. Un bruit, un "euh", un silence → ignore complètement. Attends une vraie réponse.
 - PENDANT L'INTRO : si le client parle ou fait un bruit pendant l'intro → l'IGNORER complètement et terminer l'intro EN ENTIER avant de répondre quoi que ce soit.
+- APRÈS "Comment puis-je t'aider?" : STOP COMPLET. Pas de phrase de remplissage, pas de "je suis là pour toi", pas de "prends ton temps", pas de "n'hésite pas". Silence total jusqu'à ce que le client parle.
 
 ACCUEIL :
 - Dis UNIQUEMENT la phrase d'intro fournie par le système.
@@ -720,6 +728,8 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 4. CONFIRMATION créneau :
    → "[Service complet ex: Coupe femme + coloration] le [jour complet] à [heure][, avec [coiffeuse]][, pour [prénom enfant] si enfant] — ça te convient?"
+   → [coiffeuse] = prends TOUJOURS le nom dans coiffeuses_dispo du créneau choisi. Si coiffeuses_dispo contient un nom → OBLIGATOIRE de le mentionner dans la confirmation ET de le passer dans send_booking_link.
+   → Si coiffeuses_dispo est vide (vrai Round Robin sans info) → omets la coiffeuse dans la phrase.
    → Attends OUI avant de continuer.
 
 5. DOSSIER :
@@ -787,12 +797,20 @@ RÈGLES ABSOLUES :
 - CLIENT EXISTANT (prefetch ou lookup trouvé) : NE JAMAIS demander le nom, le numéro ou l'email. Ces infos sont déjà connues. Appelle send_booking_link directement avec les infos du dossier.
 - CLIENT AVEC DOSSIER : JAMAIS demander le numéro de cellulaire, le nom ou le courriel. Ces infos sont dans le dossier. Aller directement à l'envoi (étape 8).
 
-TRANSFERT À UN HUMAIN — SEULEMENT si le client demande EXPLICITEMENT :
-- Mots clés clairs : "agent", "humain", "parler à quelqu'un", "parler à une personne", "réceptionniste", "Équipe"
-- Frustration répétée (3e fois qu'il dit la même chose sans être compris)
-- Sacres répétés avec ton impatient
-- Si Hélène ne comprend vraiment pas après 2 tentatives → "Désolée, je vais te transférer à l'équipe!" → transfer_to_agent
-- JAMAIS transférer juste parce que la réponse n'est pas le mot exact attendu`;
+TRANSFERT — PHRASE TOUJOURS IDENTIQUE :
+→ "Bien sûr, donne-moi un instant je te transfère!" puis transfer_to_agent. Jamais d'autre formulation.
+→ Ne dis RIEN après cette phrase — Twilio prend la main 3.5 secondes après.
+
+TRANSFERT IMMÉDIAT si la demande est EXPLICITE :
+• Mot isolé (dit seul, sans phrase) : "équipe", "agent", "humain", "réceptionniste", "transfert"
+• Phrase de demande claire : "je veux parler à quelqu'un / une personne / l'équipe / le propriétaire / le patron / le gérant", "peux-tu me transférer", "parle-moi à quelqu'un", "talk to someone", "speak to someone"
+NE PAS transférer si le mot est dans une question de service : "c'est quoi l'équipe?", "qui sont vos coiffeuses?", "l'équipe est disponible?", "vous êtes une équipe de combien?" → répondre normalement.
+
+TRANSFERT CONTEXTUEL (situations spécifiques) :
+- Frustration répétée (3e fois sans être compris) → même phrase + transfer_to_agent
+- Sacres répétés → même phrase + transfer_to_agent
+- Hélène ne comprend vraiment pas après 2 tentatives → même phrase + transfer_to_agent
+- JAMAIS transférer juste parce que la réponse est vague — interpréter d'abord.`;
 }
 
 
@@ -928,6 +946,7 @@ async function runTool(name, args, session) {
     if (name === "get_available_slots") {
       if (args.service) cl.service = args.service;
       if (args.coiffeuse) cl.coiffeuse = args.coiffeuse;
+      // Coiffeuse sera mise à jour dans send_booking_link depuis coiffeuses_dispo si besoin
       if (!cl.demandes.includes("rdv")) cl.demandes.push("rdv");
       logEvent(sid, "tool", `Recherche créneaux — service:${args.service}${args.coiffeuse ? " coiffeuse:"+args.coiffeuse : ""}${args.date_debut ? " date:"+args.date_debut : ""}`);
     } else if (name === "get_salon_info") {
@@ -1123,7 +1142,7 @@ async function runTool(name, args, session) {
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
           event_type_uri: slotUriMap[iso]?.uri || null,
         })),
-        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste — chaque créneau a son event_type_uri garanti. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse, 'Les disponibilités sont :'. REGROUPER par journée (ex: 'mardi le 3 mars à 9h et 14h, mercredi le 4 mars à 10h'). AM avant PM. Quand le client choisit, utilise EXACTEMENT l'event_type_uri du créneau choisi dans send_booking_link.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse demandée mais coiffeuses_dispo non vide, mentionne les noms : 'Avec [nom], j\'ai...'. Si coiffeuses_dispo vide (Round Robin), présente sans nommer. REGROUPER par journée. AM avant PM. CONFIRMATION CRÉNEAU : inclure le nom de la coiffeuse si connu dans coiffeuses_dispo, ex: 'Coupe enfant le lundi 3 mars à 10h, avec Sophie — ça te convient?'. IMPORTANT : quand le client choisit un créneau, retiens le nom de coiffeuse présent dans coiffeuses_dispo de CE créneau et passe-le OBLIGATOIREMENT dans le paramètre coiffeuse de send_booking_link. Ne jamais appeler send_booking_link sans coiffeuse si coiffeuses_dispo était non vide pour le créneau choisi.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
@@ -1217,6 +1236,8 @@ async function runTool(name, args, session) {
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
     // Confirmer le type client si pas encore déterminé
     if (cl && !cl.clientType) cl.clientType = args.email ? "existant" : "nouveau";
+    // Mettre à jour le log avec la coiffeuse résolue (même si Round Robin)
+    if (cl && coiffeuseNom) cl.coiffeuse = coiffeuseNom;
     // Charger les coiffeuses si pas encore fait
     if (coiffeuses.length === 0) await loadCoiffeuses();
 
@@ -1257,6 +1278,24 @@ async function runTool(name, args, session) {
 
     const name = args.name.trim();
 
+    // Résoudre le vrai nom de coiffeuse — 3 sources par ordre de priorité
+    let coiffeuseNom = args.coiffeuse || null;
+    // Source 2 : depuis l'URI de l'event type (coiffeuse individuelle)
+    if (!coiffeuseNom && uri) {
+      const matchedC = coiffeuses.find(c =>
+        Object.values(c.eventTypes || {}).some(u => u === uri)
+      );
+      if (matchedC && matchedC.name !== "disponible") {
+        coiffeuseNom = matchedC.name;
+        console.log(`[BOOKING] Coiffeuse résolue depuis URI: ${coiffeuseNom}`);
+      }
+    }
+    // Source 3 : depuis cl.coiffeuse (capturé lors du get_available_slots)
+    if (!coiffeuseNom && cl?.coiffeuse) {
+      coiffeuseNom = cl.coiffeuse;
+      console.log(`[BOOKING] Coiffeuse depuis session: ${coiffeuseNom}`);
+    }
+
     // ── Si email déjà connu → créer le RDV Calendly directement ─────────────
     if (args.email?.trim()) {
       const email = args.email.trim().toLowerCase();
@@ -1266,12 +1305,12 @@ async function runTool(name, args, session) {
         const cancelUrl     = result?.resource?.cancel_url     || "";
         const rescheduleUrl = result?.resource?.reschedule_url || "";
 
-        await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: args.coiffeuse || null });
+        await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: coiffeuseNom || null });
 
         const smsBody =
           `${SALON_NAME}: RDV confirme
 ` +
-          `${slotToShort(args.slot_iso)}${args.coiffeuse ? " avec " + args.coiffeuse : ""}
+          `${slotToShort(args.slot_iso)}${coiffeuseNom ? " avec " + coiffeuseNom : ""}
 ` +
           (rescheduleUrl ? `Modifier: ${rescheduleUrl}
 ` : "") +
@@ -1294,8 +1333,8 @@ async function runTool(name, args, session) {
               .catch(e => console.error("[HANGUP] ❌", e.message));
           }
         }, 11000);
-        return { success: true, direct: true, phone_display: fmtPhone(phone), email,
-          message: `RDV confirmé pour ${args.coiffeuse || "la coiffeuse"}. Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${args.coiffeuse || "ta coiffeuse"}." [pause 1s] "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
+        return { success: true, direct: true, phone_display: fmtPhone(phone), email, coiffeuse: coiffeuseNom,
+          message: `RDV confirmé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${coiffeuseNom || "ta coiffeuse"}." [pause 1s] "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
       } catch (e) {
         console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
         return { error: `Impossible de créer le rendez-vous : ${e.message}` };
@@ -1305,8 +1344,8 @@ async function runTool(name, args, session) {
     // ── Sinon → envoyer lien SMS pour saisir le courriel ─────────────────────
     const token = crypto.randomBytes(16).toString("hex");
     pending.set(token, {
-      expiresAt: Date.now() + 120 * 60 * 1000, // 2h
-      payload: { phone, name, service: args.service, eventTypeUri: uri, startTimeIso: args.slot_iso, coiffeuse: args.coiffeuse || null },
+      expiresAt: Date.now() + 20 * 60 * 1000, // 20min — au-delà le créneau peut être pris
+      payload: { phone, name, service: args.service, eventTypeUri: uri, startTimeIso: args.slot_iso, coiffeuse: coiffeuseNom || null },
     });
     console.log(`[BOOKING] Token créé: ${token}`);
 
@@ -1334,7 +1373,7 @@ async function runTool(name, args, session) {
         }
       }, 14000); // phrase nouveau client plus longue — 14s
       return { success: true, phone_display: fmtPhone(phone),
-        message: `SMS envoyé. Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${args.coiffeuse || "ta coiffeuse"}." puis "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
+        message: `SMS envoyé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${coiffeuseNom || "ta coiffeuse"}." puis "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -1445,15 +1484,17 @@ async function runTool(name, args, session) {
     if (twilioClient && session.twilioCallSid && FALLBACK_NUMBER) {
       setTimeout(async () => {
         try {
+          // PAS de <Say> Twilio — Hélène a déjà dit la phrase de transfert vocalement
+          // Twilio se contente du <Dial> silencieux
           await twilioClient.calls(session.twilioCallSid)
             .update({
-              twiml: `<Response><Say language="fr-CA" voice="alice">Veuillez patienter, je vous transfère à un membre de l'équipe.</Say><Dial>${FALLBACK_NUMBER}</Dial></Response>`
+              twiml: `<Response><Dial>${FALLBACK_NUMBER}</Dial></Response>`
             });
           console.log(`[TRANSFER] ✅ Transfert vers ${FALLBACK_NUMBER}`);
         } catch (e) {
           console.error("[TRANSFER] ❌ Erreur:", e.message);
         }
-      }, 1500);
+      }, 3500); // 3.5s — Hélène a le temps de terminer sa phrase avant que Twilio prenne la main
     } else {
       console.warn("[TRANSFER] FALLBACK_NUMBER non configuré ou twilioClient manquant");
     }
@@ -2495,12 +2536,12 @@ wss.on("connection", (twilioWs) => {
             followUp = buildFollowUp(prefetched);
           } else if (prefetched === false) {
             // Nouveau client confirmé
-            followUp = "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
+            followUp = "Dis EXACTEMENT et UNIQUEMENT : 'Comment puis-je t\'aider?' — UN SEUL SILENCE ABSOLU après. Zéro mot de plus. N\'ajoute rien.";
           } else {
             // Lookup pas encore terminé — attendre 1.5s puis réessayer
             setTimeout(() => {
               const p2 = session?.prefetchedClient;
-              const fu2 = (p2 && p2.name) ? buildFollowUp(p2) : "Dis EXACTEMENT : 'Comment puis-je t\'aider?' puis attends la réponse.";
+              const fu2 = (p2 && p2.name) ? buildFollowUp(p2) : "Dis EXACTEMENT et UNIQUEMENT : 'Comment puis-je t\'aider?' — SILENCE ABSOLU après. Zéro mot de plus.";
               if (oaiWs?.readyState === WebSocket.OPEN) {
                 oaiWs.send(JSON.stringify({
                   type: "conversation.item.create",
@@ -2796,6 +2837,13 @@ app.post("/confirm-email/:token", async (req, res) => {
     return res.status(400).type("text/html").send(htmlForm(name, "Courriel invalide."));
 
   try {
+    // Vérifier que le créneau est encore disponible avant de tenter la réservation
+    const checkSlots = await getSlots(eventTypeUri, new Date(startTimeIso), new Date(new Date(startTimeIso).getTime() + 60_000));
+    const stillAvailable = checkSlots.some(s => s === startTimeIso || Math.abs(new Date(s) - new Date(startTimeIso)) < 60_000);
+    if (!stillAvailable) {
+      console.warn(`[EMAIL] ❌ Créneau plus dispo: ${startTimeIso}`);
+      return res.status(409).type("text/html").send(htmlSlotTaken(name, slotToFrench(startTimeIso)));
+    }
     const result = await createInvitee({ uri: eventTypeUri, startTimeIso, name, email });
     pending.delete(req.params.token);
 
@@ -2818,7 +2866,12 @@ app.post("/confirm-email/:token", async (req, res) => {
     res.type("text/html").send(htmlSuccess(name, slotToFrench(startTimeIso), rescheduleUrl, cancelUrl));
   } catch (e) {
     console.error("[EMAIL]", e);
-    res.status(500).type("text/html").send(htmlError(e.message));
+    // Créneau entre-temps pris par quelqu'un d'autre
+    if (e.message?.includes("already_filled")) {
+      res.status(409).type("text/html").send(htmlSlotTaken(name, slotToFrench(startTimeIso)));
+    } else {
+      res.status(500).type("text/html").send(htmlError(e.message));
+    }
   }
 });
 
@@ -2856,8 +2909,28 @@ function htmlSuccess(name, slot, reschedule, cancel) {
     <p class="muted">Tu peux fermer cette page.</p>`);
 }
 
+function htmlSlotTaken(name, slot) {
+  return layout("Créneau non disponible", `
+    <h1>😕 Ce créneau vient d'être pris</h1>
+    <p>Désolé ${name ? name.split(" ")[0] : ""}, le créneau <strong>${slot}</strong> a été réservé par quelqu'un d'autre pendant que tu confirmais ton courriel.</p>
+    <p style="margin-top:16px">Rappelle-nous pour choisir un autre créneau disponible — ça prend moins d'une minute!</p>
+    <a href="tel:${TWILIO_CALLER_ID || ""}" class="btn" style="margin-top:20px;text-decoration:none;display:block;text-align:center">📞 Rappeler le salon</a>
+    <p class="muted" style="margin-top:20px">Tes informations ont été sauvegardées — tu seras reconnu automatiquement à ton prochain appel.</p>
+  `);
+}
+
 function htmlError(msg) {
-  return layout("Erreur", `<h1>⚠️ Erreur</h1><p>Impossible de créer le rendez-vous. Rappelle le salon.</p><pre style="font-size:.75rem;color:#c0392b;margin-top:12px;white-space:pre-wrap">${msg}</pre>`);
+  // Masquer le JSON technique — afficher un message clair
+  const isCalendly = msg?.includes("Calendly") || msg?.includes("400") || msg?.includes("500");
+  const display = isCalendly
+    ? "Une erreur technique est survenue lors de la création du rendez-vous."
+    : (msg || "Erreur inconnue");
+  return layout("Erreur", `
+    <h1>⚠️ Erreur</h1>
+    <p>Impossible de créer le rendez-vous. Rappelle le salon pour finaliser ta réservation.</p>
+    <p style="font-size:.82rem;color:#999;margin-top:12px">${display}</p>
+    <a href="tel:${TWILIO_CALLER_ID || ""}" class="btn" style="margin-top:20px;text-decoration:none;display:block;text-align:center">📞 Rappeler le salon</a>
+  `);
 }
 
 function html410() {
