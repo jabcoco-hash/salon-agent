@@ -48,7 +48,13 @@ const {
   CALENDLY_ORG_URI = "https://api.calendly.com/organizations/bb62d2e8-761e-48ed-9917-58e0a39126dd",
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
+  RAILWAY_API_TOKEN,
 } = process.env;
+
+// Variables auto-injectées par Railway (pas visibles dans l'UI mais disponibles)
+const RAILWAY_SERVICE_ID     = process.env.RAILWAY_SERVICE_ID;
+const RAILWAY_PROJECT_ID     = process.env.RAILWAY_PROJECT_ID;
+const RAILWAY_ENVIRONMENT_ID = process.env.RAILWAY_ENVIRONMENT_ID || "production";
 
 function envStr(key, fallback = "") {
   const v = process.env[key];
@@ -1458,13 +1464,13 @@ app.get("/calendly-info", async (req, res) => {
 
 // ─── Dashboard logs par appel ─────────────────────────────────────────────────
 app.get("/dashboard", (req, res) => {
-  const logs = [...callLogs.values()].reverse(); // plus récent en premier
+  const logs = [...callLogs.values()].reverse();
 
   const badgeColor = r => ({
-    "réservation": "#22c55e", "réservation (lien courriel)": "#16a34a",
-    "agent": "#f59e0b", "fin normale": "#6c47ff",
-    "erreur": "#ef4444", "en cours": "#3b82f6",
-  }[r] || "#888");
+    "réservation": "#16a34a", "réservation (lien courriel)": "#15803d",
+    "agent": "#b45309", "fin normale": "#4f46e5",
+    "erreur": "#dc2626", "en cours": "#2563eb",
+  }[r] || "#6b7280");
 
   const fmtTime = iso => {
     if (!iso) return "—";
@@ -1480,6 +1486,11 @@ app.get("/dashboard", (req, res) => {
 
   const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🗣️", helene:"🤖" }[t] || "•");
 
+  // Agréger domaines et questions non répondues de tous les appels
+  const allDomains = [...new Set(logs.flatMap(l => l.domains || []))];
+  const allUnanswered = [...new Set(logs.flatMap(l => l.unanswered_questions || []))];
+  const allEmailDomains = [...new Set(logs.flatMap(l => l.emailDomains || []))];
+
   const rows = logs.map(log => `
     <details class="call-card">
       <summary>
@@ -1487,28 +1498,28 @@ app.get("/dashboard", (req, res) => {
         <span class="caller">${log.callerNumber || "inconnu"}</span>
         <span class="time">${fmtTime(log.startedAt)}</span>
         <span class="dur">${duration(log)}</span>
-        ${log.clientNom ? `<span class="nom">👤 ${log.clientNom}</span>` : ""}
-        ${log.service ? `<span class="svc">✂️ ${log.service}${log.coiffeuse ? " · "+log.coiffeuse : ""}</span>` : ""}
-        ${log.slot ? `<span class="slot">📅 ${log.slot.replace("T"," ").slice(0,16)}</span>` : ""}
-        ${log.demandes.length ? `<span class="dem">💬 ${log.demandes.join(", ")}</span>` : ""}
+        ${log.clientNom ? `<span class="tag tag-nom">👤 ${log.clientNom}</span>` : ""}
+        ${log.service ? `<span class="tag tag-svc">✂️ ${log.service}${log.coiffeuse ? " · "+log.coiffeuse : ""}</span>` : ""}
+        ${log.slot ? `<span class="tag tag-slot">📅 ${log.slot.replace("T"," ").slice(0,16)}</span>` : ""}
+        ${log.demandes?.length ? `<span class="tag tag-dem">💬 ${log.demandes.join(", ")}</span>` : ""}
       </summary>
       ${log.resumeClient?.length ? `
       <div class="resume">
-        <div class="resume-title">📝 Ce que le client a dit</div>
+        <div class="resume-title">🗣️ Ce que le client a dit</div>
         ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
       </div>` : ""}
       ${log.unanswered_questions?.length ? `
-      <div class="resume" style="border-left:3px solid #f59e0b;background:#1a1200">
+      <div class="resume resume-warn">
         <div class="resume-title">❓ Questions non répondues</div>
         ${log.unanswered_questions.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
       </div>` : ""}
       ${log.domains?.length ? `
-      <div class="resume" style="border-left:3px solid #10b981;background:#001a0f">
+      <div class="resume resume-green">
         <div class="resume-title">🏷️ Thèmes abordés</div>
         ${log.domains.map(d => `<div class="resume-line"><span class="rnum">•</span>${d}</div>`).join("")}
       </div>` : ""}
       ${log.emailDomains?.length ? `
-      <div class="resume" style="border-left:3px solid #6366f1;background:#0f0020">
+      <div class="resume resume-indigo">
         <div class="resume-title">📧 Domaines email</div>
         ${log.emailDomains.map(d => `<div class="resume-line"><span class="rnum">@</span>${d}</div>`).join("")}
       </div>` : ""}
@@ -1530,61 +1541,153 @@ app.get("/dashboard", (req, res) => {
 <title>Dashboard — ${SALON_NAME}</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:system-ui,sans-serif;background:#0f0f1a;color:#e2e8f0;min-height:100vh;padding:24px}
+  body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:24px}
   h1{font-size:1.4rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
-  .sub{color:#64748b;font-size:.85rem;margin-bottom:20px}
-  .stats{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
-  .stat{background:#1e1e2e;border-radius:10px;padding:12px 18px;min-width:100px;text-align:center;cursor:pointer;transition:all .15s;border:2px solid transparent}
+  .sub{color:#6b7280;font-size:.85rem;margin-bottom:20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .sub a{color:#6c47ff;text-decoration:none;font-weight:500}
+  .sub a:hover{text-decoration:underline}
+  .sub a.danger{color:#dc2626}
+
+  /* Tuiles haut de page */
+  .tiles{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+  .tile{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;padding:14px 20px;text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:4px;min-width:120px;transition:all .15s;cursor:pointer}
+  .tile:hover{border-color:#6c47ff;box-shadow:0 2px 8px rgba(108,71,255,.12)}
+  .tile-n{font-size:1.6rem;font-weight:700}
+  .tile-l{font-size:.75rem;color:#6b7280}
+  .tile.active{border-color:#6c47ff;background:#f5f3ff}
+  .tile-admin{background:#6c47ff;color:#fff;border-color:#6c47ff}
+  .tile-admin:hover{background:#5538d4}
+  .tile-admin .tile-l{color:#c4b5fd}
+  .tile-questions{border-color:#f59e0b}
+  .tile-questions .tile-n{color:#b45309}
+  .tile-domains{border-color:#10b981}
+  .tile-domains .tile-n{color:#059669}
+  .tile-email{border-color:#6366f1}
+  .tile-email .tile-n{color:#4338ca}
+
+  /* Panneaux globaux */
+  .panel{background:#fff;border:1.5px solid #e5e7eb;border-radius:12px;padding:18px 20px;margin-bottom:16px;display:none}
+  .panel.visible{display:block}
+  .panel-title{font-size:.85rem;font-weight:700;color:#6c47ff;text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px}
+  .panel-grid{display:flex;flex-wrap:wrap;gap:8px}
+  .panel-tag{background:#f3f0ff;color:#6c47ff;border-radius:8px;padding:4px 12px;font-size:.82rem;border:1px solid #ddd6fe}
+  .panel-tag.warn{background:#fffbeb;color:#b45309;border-color:#fde68a}
+  .panel-tag.green{background:#ecfdf5;color:#059669;border-color:#a7f3d0}
+  .panel-tag.indigo{background:#eef2ff;color:#4338ca;border-color:#c7d2fe}
+  .panel-empty{color:#9ca3af;font-size:.85rem}
+
+  /* Stats filtres */
+  .stats{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+  .stat{background:#fff;border:1.5px solid #e5e7eb;border-radius:10px;padding:10px 16px;min-width:90px;text-align:center;cursor:pointer;transition:all .15s}
   .stat:hover{border-color:#6c47ff}
-  .stat.active{border-color:#fff;background:#252535}
-  .stat-n{font-size:1.6rem;font-weight:700}
-  .stat-l{font-size:.75rem;color:#64748b;margin-top:2px}
-  .call-card{background:#1e1e2e;border-radius:10px;margin-bottom:10px;overflow:hidden;border:1px solid #2d2d3d}
-  summary{display:flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;flex-wrap:wrap;list-style:none}
-  summary:hover{background:#252535}
-  .badge{padding:2px 10px;border-radius:20px;font-size:.75rem;font-weight:700;color:#fff;white-space:nowrap}
-  .caller{font-weight:600;font-size:.95rem}
-  .time{color:#64748b;font-size:.8rem}
-  .dur{color:#94a3b8;font-size:.8rem;background:#2d2d3d;padding:1px 7px;border-radius:10px}
-  .nom,.svc,.slot,.dem{font-size:.8rem;color:#94a3b8;background:#252535;padding:2px 8px;border-radius:8px}
-  .events{padding:12px 16px;border-top:1px solid #2d2d3d;display:flex;flex-direction:column;gap:6px}
-  .event{display:flex;gap:10px;align-items:flex-start;font-size:.82rem}
-  .ets{color:#475569;white-space:nowrap;min-width:110px}
-  .eic{min-width:18px}
-  .emsg{color:#cbd5e1}
-  .event-warn .emsg{color:#fbbf24}
-  .event-error .emsg{color:#f87171}
-  .event-booking .emsg{color:#4ade80}
-  .empty{color:#475569;text-align:center;padding:40px}
-  .refresh{margin-left:auto;background:#6c47ff;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-size:.85rem}
-  .resume{padding:10px 16px;background:#1a1a2e;border-top:1px solid #2d2d3d}
-  .resume-title{font-size:.75rem;color:#6c47ff;font-weight:700;margin-bottom:6px;text-transform:uppercase;letter-spacing:.05em}
-  .resume-line{display:flex;gap:8px;font-size:.82rem;color:#94a3b8;padding:3px 0}
-  .rnum{color:#475569;min-width:18px;font-size:.75rem}
-  .event-client .emsg{color:#a5f3fc}
-  .event-helene .emsg{color:#c4b5fd}
+  .stat.active{border-color:#6c47ff;background:#f5f3ff}
+  .stat-n{font-size:1.5rem;font-weight:700}
+  .stat-l{font-size:.72rem;color:#6b7280;margin-top:1px}
+
+  /* Call cards */
+  .call-card{background:#fff;border:1.5px solid #e5e7eb;border-radius:10px;margin-bottom:8px;overflow:hidden}
+  summary{display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;flex-wrap:wrap;list-style:none}
+  summary:hover{background:#f9fafb}
+  .badge{padding:2px 10px;border-radius:20px;font-size:.72rem;font-weight:700;color:#fff;white-space:nowrap}
+  .caller{font-weight:600;font-size:.92rem;color:#111}
+  .time{color:#9ca3af;font-size:.78rem}
+  .dur{color:#6b7280;font-size:.78rem;background:#f3f4f6;padding:1px 7px;border-radius:10px}
+  .tag{font-size:.78rem;background:#f3f4f6;color:#374151;padding:2px 8px;border-radius:8px}
+  .tag-nom{background:#f5f3ff;color:#6c47ff}
+  .tag-svc{background:#ecfdf5;color:#059669}
+  .tag-slot{background:#eff6ff;color:#2563eb}
+  .tag-dem{background:#fff7ed;color:#c2410c}
+
+  /* Events */
+  .events{padding:10px 14px;border-top:1px solid #f3f4f6;display:flex;flex-direction:column;gap:5px;background:#fafafa}
+  .event{display:flex;gap:10px;align-items:flex-start;font-size:.80rem}
+  .ets{color:#9ca3af;white-space:nowrap;min-width:105px}
+  .eic{min-width:16px}
+  .emsg{color:#374151}
+  .event-warn .emsg{color:#b45309}
+  .event-error .emsg{color:#dc2626}
+  .event-booking .emsg{color:#059669;font-weight:600}
+  .event-client .emsg{color:#2563eb}
+  .event-helene .emsg{color:#6c47ff}
+
+  /* Résumés intérieurs */
+  .resume{padding:10px 14px;background:#fafafa;border-top:1px solid #f3f4f6}
+  .resume-warn{background:#fffbeb;border-top:2px solid #f59e0b}
+  .resume-green{background:#ecfdf5;border-top:2px solid #10b981}
+  .resume-indigo{background:#eef2ff;border-top:2px solid #6366f1}
+  .resume-title{font-size:.72rem;color:#6c47ff;font-weight:700;margin-bottom:5px;text-transform:uppercase;letter-spacing:.05em}
+  .resume-warn .resume-title{color:#b45309}
+  .resume-green .resume-title{color:#059669}
+  .resume-indigo .resume-title{color:#4338ca}
+  .resume-line{display:flex;gap:8px;font-size:.80rem;color:#374151;padding:2px 0}
+  .rnum{color:#9ca3af;min-width:18px;font-size:.72rem}
+  .empty{color:#9ca3af;text-align:center;padding:40px;background:#fff;border-radius:10px;border:1.5px dashed #e5e7eb}
 </style>
 </head>
 <body>
-<h1>✂️ ${SALON_NAME} — Dashboard appels</h1>
-<p class="sub">Les ${logs.length} derniers appels (max ${MAX_LOGS}) · <a href="/dashboard" style="color:#6c47ff">Rafraîchir</a>
-  &nbsp;·&nbsp;
-  <a href="#" onclick="if(confirm('Vider tous les logs?')){fetch('/admin/logs/clear?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}" style="color:#f59e0b">🗑 Vider</a>
-  &nbsp;·&nbsp;
-  <a href="#" onclick="if(confirm('Supprimer le fichier JSON?')){fetch('/admin/logs/delete-file?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}" style="color:#ef4444">❌ Supprimer fichier</a>
+${SALON_LOGO_URL
+    ? `<div style="margin-bottom:12px"><img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:52px;max-width:180px;object-fit:contain"></div>`
+    : ""}<h1>${SALON_LOGO_URL ? "" : "✂️ "}${SALON_NAME} — Dashboard appels</h1>
+<p class="sub">
+  Les ${logs.length} derniers appels (max ${MAX_LOGS})
+  &nbsp;·&nbsp;<a href="/dashboard">Rafraîchir</a>
+  &nbsp;·&nbsp;<a href="#" onclick="if(confirm('Vider tous les logs?')){fetch('/admin/logs/clear?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}">🗑 Vider</a>
+  &nbsp;·&nbsp;<a class="danger" href="#" onclick="if(confirm('Supprimer le fichier JSON?')){fetch('/admin/logs/delete-file?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}">❌ Supprimer fichier</a>
 </p>
-<div class="stats">
-  <div class="stat active" data-filter="all" onclick="filter(this,'all')"><div class="stat-n" style="color:#6c47ff">${logs.length}</div><div class="stat-l">Tous</div></div>
-  <div class="stat" data-filter="réservation" onclick="filter(this,'réservation')"><div class="stat-n" style="color:#22c55e">${logs.filter(l=>l.result.startsWith("réservation")).length}</div><div class="stat-l">Réservations</div></div>
-  <div class="stat" data-filter="agent" onclick="filter(this,'agent')"><div class="stat-n" style="color:#f59e0b">${logs.filter(l=>l.result==="agent").length}</div><div class="stat-l">Agents</div></div>
-  <div class="stat" data-filter="en cours" onclick="filter(this,'en cours')"><div class="stat-n" style="color:#3b82f6">${logs.filter(l=>l.result==="en cours").length}</div><div class="stat-l">En cours</div></div>
-  <div class="stat" data-filter="fin normale" onclick="filter(this,'fin normale')"><div class="stat-n" style="color:#6c47ff">${logs.filter(l=>l.result==="fin normale").length}</div><div class="stat-l">Fin normale</div></div>
-  <div class="stat" data-filter="erreur" onclick="filter(this,'erreur')"><div class="stat-n" style="color:#ef4444">${logs.filter(l=>l.result==="erreur").length}</div><div class="stat-l">Erreurs</div></div>
+
+<!-- Tuiles principales -->
+<div class="tiles">
+  <div class="tile active" data-filter="all" onclick="filterCalls(this,'all')">
+    <div class="tile-n" style="color:#6c47ff">${logs.length}</div><div class="tile-l">Tous les appels</div>
+  </div>
+  <div class="tile" data-filter="réservation" onclick="filterCalls(this,'réservation')">
+    <div class="tile-n" style="color:#16a34a">${logs.filter(l=>l.result.startsWith("réservation")).length}</div><div class="tile-l">Réservations</div>
+  </div>
+  <div class="tile" data-filter="agent" onclick="filterCalls(this,'agent')">
+    <div class="tile-n" style="color:#b45309">${logs.filter(l=>l.result==="agent").length}</div><div class="tile-l">Agents</div>
+  </div>
+  <div class="tile" data-filter="en cours" onclick="filterCalls(this,'en cours')">
+    <div class="tile-n" style="color:#2563eb">${logs.filter(l=>l.result==="en cours").length}</div><div class="tile-l">En cours</div>
+  </div>
+  <div class="tile" data-filter="fin normale" onclick="filterCalls(this,'fin normale')">
+    <div class="tile-n" style="color:#4f46e5">${logs.filter(l=>l.result==="fin normale").length}</div><div class="tile-l">Fin normale</div>
+  </div>
+  <div class="tile" data-filter="erreur" onclick="filterCalls(this,'erreur')">
+    <div class="tile-n" style="color:#dc2626">${logs.filter(l=>l.result==="erreur").length}</div><div class="tile-l">Erreurs</div>
+  </div>
+  <div class="tile tile-questions" onclick="togglePanel('panel-questions', this)">
+    <div class="tile-n">${allUnanswered.length}</div><div class="tile-l">❓ Questions sans réponse</div>
+  </div>
+  <div class="tile tile-domains" onclick="togglePanel('panel-domains', this)">
+    <div class="tile-n">${allDomains.length}</div><div class="tile-l">🏷️ Thèmes abordés</div>
+  </div>
+  <div class="tile tile-email" onclick="togglePanel('panel-email', this)">
+    <div class="tile-n">${allEmailDomains.length}</div><div class="tile-l">📧 Domaines email</div>
+  </div>
+  <a class="tile tile-admin" href="/admin/salon">
+    <div class="tile-n">⚙️</div><div class="tile-l">Config salon</div>
+  </a>
 </div>
+
+<!-- Panneaux dépliables -->
+<div class="panel" id="panel-questions">
+  <div class="panel-title">❓ Questions auxquelles Hélène n'a pas su répondre (tous appels)</div>
+  ${allUnanswered.length ? `<div class="panel-grid">${allUnanswered.map(q=>`<span class="panel-tag warn">${q.replace(/&/g,"&amp;").replace(/</g,"&lt;")}</span>`).join("")}</div>` : `<p class="panel-empty">Aucune question non répondue pour le moment.</p>`}
+</div>
+<div class="panel" id="panel-domains">
+  <div class="panel-title">🏷️ Thèmes abordés par les clients (tous appels)</div>
+  ${allDomains.length ? `<div class="panel-grid">${allDomains.map(d=>`<span class="panel-tag green">${d}</span>`).join("")}</div>` : `<p class="panel-empty">Aucun thème détecté pour le moment.</p>`}
+</div>
+<div class="panel" id="panel-email">
+  <div class="panel-title">📧 Domaines email utilisés (tous appels)</div>
+  ${allEmailDomains.length ? `<div class="panel-grid">${allEmailDomains.map(d=>`<span class="panel-tag indigo">@${d}</span>`).join("")}</div>` : `<p class="panel-empty">Aucun domaine email détecté pour le moment.</p>`}
+</div>
+
 <div id="list">${rows}</div>
+
 <script>
-function filter(el, val) {
-  document.querySelectorAll('.stat').forEach(s => s.classList.remove('active'));
+function filterCalls(el, val) {
+  document.querySelectorAll('.tile[data-filter]').forEach(t => t.classList.remove('active'));
   el.classList.add('active');
   document.querySelectorAll('.call-card').forEach(card => {
     if (val === 'all') { card.style.display = ''; return; }
@@ -1593,9 +1696,288 @@ function filter(el, val) {
     card.style.display = (val === 'réservation' ? result.startsWith('réservation') : result === val) ? '' : 'none';
   });
 }
+function togglePanel(id, tile) {
+  const panel = document.getElementById(id);
+  const isVisible = panel.classList.contains('visible');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('visible'));
+  document.querySelectorAll('.tile:not([data-filter])').forEach(t => t.style.background = '');
+  if (!isVisible) {
+    panel.classList.add('visible');
+    panel.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+}
 </script>
 </body>
 </html>`);
+});
+
+// ─── Page admin salon ────────────────────────────────────────────────────────
+app.get("/admin/salon", (req, res) => {
+  const SALON_VARS = [
+    { key: "SALON_NAME",       label: "Nom du salon",           val: SALON_NAME,       multi: false },
+    { key: "SALON_CITY",       label: "Ville",                  val: SALON_CITY,       multi: false },
+    { key: "SALON_ADDRESS",    label: "Adresse",                val: SALON_ADDRESS,    multi: false },
+    { key: "SALON_HOURS",      label: "Heures d'ouverture",     val: SALON_HOURS,      multi: true  },
+    { key: "SALON_PRICE_LIST", label: "Liste de prix",          val: SALON_PRICE_LIST, multi: true  },
+    { key: "SALON_PAYMENT",    label: "Modes de paiement",      val: SALON_PAYMENT,    multi: false },
+    { key: "SALON_PARKING",    label: "Stationnement",          val: SALON_PARKING,    multi: false },
+    { key: "SALON_ACCESS",     label: "Accessibilité",          val: SALON_ACCESS,     multi: false },
+    { key: "SALON_LOGO_URL",   label: "URL du logo",            val: SALON_LOGO_URL,   multi: false },
+  ];
+
+  const hasRailwayAPI = !!(RAILWAY_API_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID);
+
+  const fields = SALON_VARS.map(v => {
+    const safe = (v.val || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    if (v.multi) {
+      return `<div class="field">
+        <label for="${v.key}">${v.label} <span class="badge-multi">multiligne</span></label>
+        <textarea id="${v.key}" name="${v.key}" rows="4">${safe}</textarea>
+      </div>`;
+    }
+    return `<div class="field">
+      <label for="${v.key}">${v.label}</label>
+      <input type="text" id="${v.key}" name="${v.key}" value="${safe}">
+    </div>`;
+  }).join("");
+
+  res.type("text/html").send(`<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Config salon — ${SALON_NAME}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:32px 24px}
+  .card{background:#fff;border:1.5px solid #e5e7eb;border-radius:14px;padding:28px 32px;max-width:680px;margin:0 auto}
+  h1{font-size:1.3rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
+  .sub{color:#6b7280;font-size:.85rem;margin-bottom:24px}
+  .sub a{color:#6c47ff;text-decoration:none}
+  .field{margin-bottom:18px}
+  label{display:block;font-size:.82rem;font-weight:600;color:#374151;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+  .badge-multi{background:#ede9fe;color:#6c47ff;font-size:.70rem;padding:1px 7px;border-radius:8px;font-weight:600}
+  input[type=text],input[type=password],textarea{width:100%;padding:10px 12px;font-size:.92rem;border:1.5px solid #d1d5db;border-radius:8px;outline:none;font-family:inherit;resize:vertical}
+  input[type=text]:focus,input[type=password]:focus,textarea:focus{border-color:#6c47ff}
+  textarea{line-height:1.5}
+  .note{background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:14px 16px;font-size:.82rem;color:#5b21b6;margin-bottom:22px;line-height:1.6}
+  .note code{background:#ede9fe;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.80rem}
+  .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+  .btn{display:inline-flex;align-items:center;gap:6px;background:#6c47ff;color:#fff;border:none;padding:11px 24px;border-radius:8px;font-size:.90rem;font-weight:600;cursor:pointer}
+  .btn:hover{background:#5538d4}
+  .btn:disabled{background:#c4b5fd;cursor:not-allowed}
+  .btn-back{background:#f3f4f6;color:#374151;margin-right:10px}
+  .btn-back:hover{background:#e5e7eb}
+  .btn-save{background:#059669}
+  .btn-save:hover{background:#047857}
+  .alert{border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:.88rem;display:none}
+  .alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
+  .alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
+  .alert-info{background:#eff6ff;border:1.5px solid #93c5fd;color:#1e40af}
+  .token-row{display:flex;gap:8px;align-items:center;margin-bottom:22px}
+  .token-row input{flex:1}
+  .spinner{display:none;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .logo-preview{max-height:48px;max-width:160px;object-fit:contain;margin-top:8px;border-radius:6px;display:none}
+  hr{border:none;border-top:1.5px solid #f3f4f6;margin:22px 0}
+</style>
+</head>
+<body>
+<div class="card">
+  ${SALON_LOGO_URL ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:52px;max-width:180px;object-fit:contain;margin-bottom:12px;display:block">` : ""}
+  <h1>⚙️ Configuration du salon</h1>
+  <p class="sub"><a href="/dashboard">← Retour au dashboard</a></p>
+
+  ${hasRailwayAPI ? `
+  <div class="note">
+    ✅ <strong>Sauvegarde directe Railway activée.</strong> Les modifications seront appliquées et un redéploiement automatique sera déclenché (~30 secondes).
+  </div>` : `
+  <div class="note warn">
+    ⚠️ <strong>Sauvegarde Railway non configurée.</strong> Ajoute ces variables dans Railway pour activer la sauvegarde directe :<br><br>
+    <code>RAILWAY_API_TOKEN</code> · <code>RAILWAY_SERVICE_ID</code> · <code>RAILWAY_ENVIRONMENT_ID</code><br><br>
+    En attendant, utilise le bouton <strong>Copier pour Railway</strong>.
+  </div>`}
+
+  <div id="alertOk" class="alert alert-ok"></div>
+  <div id="alertErr" class="alert alert-err"></div>
+  <div id="alertInfo" class="alert alert-info"></div>
+
+  <div class="token-row">
+    <input type="password" id="adminToken" placeholder="Token admin (ADMIN_TOKEN)" autocomplete="off">
+  </div>
+
+  <form id="salonForm">
+    ${fields}
+    <img id="logoPreview" class="logo-preview" alt="Aperçu logo">
+  </form>
+
+  <hr>
+  <div>
+    <button type="button" class="btn btn-back" onclick="window.location='/dashboard'">← Dashboard</button>
+    ${hasRailwayAPI ? `<button type="button" class="btn btn-save" id="btnSave" onclick="saveToRailway()">
+      <span class="spinner" id="spinner"></span>💾 Sauvegarder & redéployer
+    </button>` : ""}
+    <button type="button" class="btn" style="background:#475569" onclick="copyEnv()">📋 Copier pour Railway</button>
+  </div>
+</div>
+
+<script>
+const KEYS = ${JSON.stringify(SALON_VARS.map(v=>v.key))};
+
+// Aperçu logo en temps réel
+const logoInput = document.getElementById("SALON_LOGO_URL");
+const logoPreview = document.getElementById("logoPreview");
+if (logoInput) {
+  logoInput.addEventListener("input", () => {
+    const url = logoInput.value.trim();
+    if (url) { logoPreview.src = url; logoPreview.style.display = "block"; }
+    else logoPreview.style.display = "none";
+  });
+  if (logoInput.value.trim()) { logoPreview.src = logoInput.value.trim(); logoPreview.style.display = "block"; }
+}
+
+function getValues() {
+  const vars = {};
+  KEYS.forEach(k => {
+    const el = document.getElementById(k);
+    if (el) vars[k] = el.value;
+  });
+  return vars;
+}
+
+function showAlert(id, msg) {
+  ["alertOk","alertErr","alertInfo"].forEach(i => {
+    const el = document.getElementById(i);
+    el.style.display = "none"; el.textContent = "";
+  });
+  const el = document.getElementById(id);
+  el.textContent = msg; el.style.display = "block";
+  el.scrollIntoView({behavior:"smooth", block:"nearest"});
+}
+
+async function saveToRailway() {
+  const token = document.getElementById("adminToken").value.trim();
+  if (!token) { showAlert("alertErr", "⚠️ Entre le token admin pour sauvegarder."); return; }
+  const btn = document.getElementById("btnSave");
+  const spinner = document.getElementById("spinner");
+  btn.disabled = true; spinner.style.display = "inline-block";
+  showAlert("alertInfo", "⏳ Sauvegarde en cours...");
+  try {
+    const r = await fetch("/admin/salon/save?token=" + encodeURIComponent(token), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ variables: getValues() })
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || "Erreur inconnue");
+    const msg = j.redeployed
+      ? "✅ Sauvegardé et redéploiement déclenché ! Les changements seront actifs dans ~30 secondes."
+      : "✅ Variables sauvegardées. Redéploiement: " + (j.warning || "non confirmé");
+    showAlert("alertOk", msg);
+  } catch(e) {
+    showAlert("alertErr", "❌ Erreur : " + e.message);
+  } finally {
+    btn.disabled = false; spinner.style.display = "none";
+  }
+}
+
+function copyEnv() {
+  const lines = KEYS.map(k => {
+    const el = document.getElementById(k);
+    return k + "=" + (el ? el.value.replace(/\n/g,"\\n") : "");
+  });
+  navigator.clipboard.writeText(lines.join("\n")).then(() => {
+    showAlert("alertOk", "✅ Copié dans le presse-papier ! Colle ça dans Railway → Variables.");
+  });
+}
+</script>
+</body>
+</html>`);
+});
+
+// ─── Route POST admin/salon/save → Railway API ───────────────────────────────
+app.post("/admin/salon/save", express.json(), async (req, res) => {
+  const token = req.headers["x-admin-token"] || req.query.token;
+  if (token !== (process.env.ADMIN_TOKEN || "")) return res.status(401).json({ error: "Non autorisé" });
+
+  if (!RAILWAY_API_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) {
+    return res.status(500).json({ error: "Variables Railway manquantes: RAILWAY_API_TOKEN, RAILWAY_SERVICE_ID, RAILWAY_ENVIRONMENT_ID" });
+  }
+
+  const ALLOWED_KEYS = ["SALON_NAME","SALON_CITY","SALON_ADDRESS","SALON_HOURS","SALON_PRICE_LIST","SALON_PAYMENT","SALON_PARKING","SALON_ACCESS","SALON_LOGO_URL"];
+  const variables = req.body?.variables || {};
+
+  // Filtrer uniquement les clés autorisées
+  const toSet = Object.entries(variables)
+    .filter(([k]) => ALLOWED_KEYS.includes(k))
+    .map(([name, value]) => ({ name, value: String(value) }));
+
+  if (!toSet.length) return res.status(400).json({ error: "Aucune variable valide reçue" });
+
+  try {
+    // Mutation GraphQL Railway pour upsert variables
+    const mutation = `
+      mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
+        variableCollectionUpsert(input: $input)
+      }`;
+
+    const gqlRes = await fetch("https://backboard.railway.app/graphql/v2", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${RAILWAY_API_TOKEN}`,
+      },
+      body: JSON.stringify({
+        query: mutation,
+        variables: {
+          input: {
+            projectId:     RAILWAY_PROJECT_ID || undefined,
+            environmentId: RAILWAY_ENVIRONMENT_ID,
+            serviceId:     RAILWAY_SERVICE_ID,
+            variables:     Object.fromEntries(toSet.map(v => [v.name, v.value])),
+          }
+        }
+      })
+    });
+
+    const gqlJson = await gqlRes.json();
+    if (gqlJson.errors?.length) {
+      console.error("[RAILWAY] Erreur GraphQL:", JSON.stringify(gqlJson.errors));
+      return res.status(500).json({ error: gqlJson.errors[0]?.message || "Erreur Railway API" });
+    }
+
+    console.log("[RAILWAY] ✅ Variables mises à jour:", toSet.map(v=>v.name).join(", "));
+
+    // Déclencher un redeploy
+    const redeployMutation = `
+      mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
+        serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
+      }`;
+
+    const rdRes = await fetch("https://backboard.railway.app/graphql/v2", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${RAILWAY_API_TOKEN}`,
+      },
+      body: JSON.stringify({
+        query: redeployMutation,
+        variables: { serviceId: RAILWAY_SERVICE_ID, environmentId: RAILWAY_ENVIRONMENT_ID }
+      })
+    });
+    const rdJson = await rdRes.json();
+    if (rdJson.errors?.length) {
+      console.warn("[RAILWAY] Redeploy warning:", rdJson.errors[0]?.message);
+      return res.json({ ok: true, saved: toSet.map(v=>v.name), redeployed: false, warning: rdJson.errors[0]?.message });
+    }
+
+    console.log("[RAILWAY] ✅ Redeploy déclenché");
+    return res.json({ ok: true, saved: toSet.map(v=>v.name), redeployed: true });
+
+  } catch(e) {
+    console.error("[RAILWAY] ❌", e.message);
+    return res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── Routes admin logs ────────────────────────────────────────────────────────
@@ -1766,6 +2148,14 @@ app.get("/debug-google/:phone", async (req, res) => {
   }
 
   res.json({ phone, results });
+});
+
+app.get("/debug-railway", (req, res) => {
+  // Affiche toutes les variables Railway auto-injectées pour debug
+  const railwayVars = Object.entries(process.env)
+    .filter(([k]) => k.startsWith("RAILWAY_"))
+    .reduce((acc, [k,v]) => ({ ...acc, [k]: k.includes("TOKEN") || k.includes("SECRET") ? "***" : v }), {});
+  res.json({ railway_vars: railwayVars, count: Object.keys(railwayVars).length });
 });
 
 app.get("/debug-env", async (req, res) => {
