@@ -1958,10 +1958,7 @@ app.get("/admin/salon", (req, res) => {
   <h1>⚙️ Configuration du salon</h1>
   <p class="sub"><a href="/dashboard">← Retour au dashboard</a></p>
 
-  ${hasRailwayAPI ? `
-  <div class="note">
-    ✅ <strong>Sauvegarde directe Railway activée.</strong> Les modifications seront appliquées et un redéploiement automatique sera déclenché (~30 secondes).
-  </div>` : `
+  ${hasRailwayAPI ? `` : `
   <div class="note warn">
     ⚠️ <strong>Sauvegarde Railway non configurée.</strong> Ajoute ces variables dans Railway pour activer la sauvegarde directe :<br><br>
     <code>RAILWAY_API_TOKEN</code> · <code>RAILWAY_SERVICE_ID</code> · <code>RAILWAY_ENVIRONMENT_ID</code><br><br>
@@ -2110,7 +2107,7 @@ const checkAdminToken = (req, res) => {
 };
 
 app.get("/admin/faq", (req, res) => {
-  if (!checkAdminToken(req, res)) return;
+  // Lecture publique — pas besoin de token pour afficher la liste
   res.json({ ok: true, items: faqItems });
 });
 
@@ -2449,13 +2446,14 @@ async function deleteFaq(id) {
 // Charger sans token pour afficher (lecture seule OK si token vide → 401 → on gère)
 window.addEventListener("DOMContentLoaded", () => {
   // Essai initial sans token pour voir si lecture publique activée
-  fetch("/admin/faq?token=").then(r => r.json()).then(j => {
+  fetch("/admin/faq").then(r => r.json()).then(j => {
     if (j.ok) { faqData = j.items; renderFaq(); }
   }).catch(() => {});
 });
-
-document.getElementById("tok").addEventListener("change", loadFaq);
-document.getElementById("tok").addEventListener("blur", loadFaq);
+// Recharger si token entré (pour confirmer l'accès)
+document.getElementById("tok").addEventListener("blur", () => {
+  if (document.getElementById("tok").value.trim()) loadFaq();
+});
 </script>
 </body>
 </html>`);
