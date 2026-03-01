@@ -609,6 +609,8 @@ COMPORTEMENT FONDAMENTAL :
 - Maximum 1-2 phrases par tour. Jamais plus.
 - Tu ne poses qu'UNE seule question à la fois. Tu attends la réponse avant de continuer.
 - INTERRUPTION (B8) : si le client parle pendant que tu parles, arrête-toi immédiatement, écoute, puis reprends selon ce qu'il vient de dire. Ne répète pas ta phrase précédente.
+- ATTENTE RÉPONSE ABSOLUE : après chaque question ou phrase, tu ne prononces AUCUN mot tant que le client n'a pas répondu. Zéro anticipation. Un bruit, un "euh", un silence → ignore complètement. Attends une vraie réponse.
+- PENDANT L'INTRO : si le client parle ou fait un bruit pendant l'intro → l'IGNORER complètement et terminer l'intro EN ENTIER avant de répondre quoi que ce soit.
 
 ACCUEIL :
 - Dis UNIQUEMENT la phrase d'intro fournie par le système.
@@ -647,6 +649,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 3. DISPONIBILITÉS :
    → LIMITE 90 JOURS → transfer_to_agent si dépassé.
    → Avant get_available_slots → dis "Un instant, je regarde ça!" puis appelle.
+   → PENDANT L'ATTENTE D'UN OUTIL (get_available_slots, get_existing_appointment, lookup) : si l'outil prend plus de 3 secondes, dis "Merci de patienter." et répète cette phrase toutes les 3 secondes jusqu'à réception du résultat. Ne dis RIEN d'autre. Ne commence PAS à répondre avant d'avoir le résultat.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau proposé.
    → DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh". JAMAIS "mardi à 13h30".
    → REGROUPEMENT PAR JOURNÉE : même jour → date une fois puis heures. Ex: "mardi le 3 mars à 9h et 10h, et mercredi le 4 mars à 14h".
@@ -657,6 +660,7 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Si le client demande quelles coiffeuses sont disponibles → indique les noms dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends les mêmes créneaux.
    → Client insiste 2e fois sur même heure → "Je comprends que ce soit décevant! Je vais te transférer à notre équipe." → transfer_to_agent.
    → AUCUN CRÉNEAU disponible pour la période demandée → dis : "Je n'ai pas de disponibilité [cette semaine / ce jour-là]. Je peux regarder [la semaine prochaine / une autre journée] si tu veux?" → si OUI → rappelle get_available_slots avec offset_semaines:1 ou nouvelle date. Si NON → transfer_to_agent.
+   → CLIENT QUI PRÉCISE UN MOMENT DIFFÉRENT ("plus tard", "plus tôt", "la semaine prochaine", "jeudi plutôt", "en après-midi") → NE PAS transférer. Rappelle get_available_slots avec la nouvelle contrainte (jour, periode, date_debut). Le transfert n'est pas une réponse à une préférence de date.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 4. CONFIRMATION créneau :
@@ -1211,7 +1215,9 @@ async function runTool(name, args, session) {
 ` +
           `${slotToShort(args.slot_iso)}${args.coiffeuse ? " avec " + args.coiffeuse : ""}
 ` +
-          (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "");
+          (rescheduleUrl ? `Modifier: ${rescheduleUrl}
+` : "") +
+          (cancelUrl     ? `Annuler: ${cancelUrl}`        : "");
 
         await Promise.race([
           sendSms(phone, smsBody),
@@ -1231,7 +1237,7 @@ async function runTool(name, args, session) {
           }
         }, 11000);
         return { success: true, direct: true, phone_display: fmtPhone(phone), email,
-          message: "RDV confirmé. Dis EXACTEMENT : 'Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
+          message: `RDV confirmé pour ${args.coiffeuse || "la coiffeuse"}. Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${args.coiffeuse || "ta coiffeuse"}." [pause 1s] "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
       } catch (e) {
         console.error(`[BOOKING] ❌ Erreur RDV direct: ${e.message}`);
         return { error: `Impossible de créer le rendez-vous : ${e.message}` };
@@ -1270,7 +1276,7 @@ async function runTool(name, args, session) {
         }
       }, 14000); // phrase nouveau client plus longue — 14s
       return { success: true, phone_display: fmtPhone(phone),
-        message: "SMS envoyé. Dis EXACTEMENT : 'Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!' Puis STOP absolu — zéro mot de plus, l'appel se ferme." };
+        message: `SMS envoyé. Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${args.coiffeuse || "ta coiffeuse"}." puis "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -2341,7 +2347,9 @@ app.post("/confirm-email/:token", async (req, res) => {
 ` +
       `${slotToShort(startTimeIso)}${coiffeuse ? " avec " + coiffeuse : ""}
 ` +
-      (rescheduleUrl ? `Modifier: ${rescheduleUrl}` : "")
+      (rescheduleUrl ? `Modifier: ${rescheduleUrl}
+` : "") +
+      (cancelUrl     ? `Annuler: ${cancelUrl}`        : "")
     );
 
     res.type("text/html").send(htmlSuccess(name, slotToFrench(startTimeIso), rescheduleUrl, cancelUrl));
