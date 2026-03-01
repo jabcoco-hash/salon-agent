@@ -784,43 +784,40 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
 4. CONFIRMATION créneau :
-   → "[Service complet ex: Coupe femme + coloration] le [jour complet] à [heure][, avec [coiffeuse]][, pour [prénom enfant] si enfant] — ça te convient?"
-   → [coiffeuse] = prends TOUJOURS le nom dans coiffeuses_dispo du créneau choisi. Si coiffeuses_dispo contient un nom → OBLIGATOIRE de le mentionner dans la confirmation ET de le passer dans send_booking_link.
-   → Si coiffeuses_dispo est vide (vrai Round Robin sans info) → omets la coiffeuse dans la phrase.
-   → Attends OUI avant de continuer.
+   → Après que le client choisit un créneau : "[Service] le [jour complet] à [heure], avec [coiffeuse] — ça te convient?"
+   → [coiffeuse] = prends TOUJOURS le nom dans coiffeuses_dispo du créneau choisi.
+   → Si coiffeuses_dispo est vide → omets la coiffeuse.
+   → Attends OUI avant de continuer. Ensuite → passe à l'étape 5 IMMÉDIATEMENT.
 
-5. DOSSIER :
-   → Si le système a fourni les infos client en début d'appel (prefetch) → NE PAS appeler lookup_existing_client. Email et nom sont déjà connus → SAUTE directement à l'étape 8. AUCUNE question.
+5. DOSSIER (APRÈS confirmation OUI du créneau) :
+   → Si le système a fourni les infos client (prefetch) → email et nom déjà connus → SAUTE à l'étape 8 directement.
    → Sinon → appelle lookup_existing_client silencieusement.
-   → Trouvé → SAUTE directement à l'étape 8. ZÉRO question (pas de nom, pas de numéro, pas de courriel).
-   → Non trouvé → demande le prénom et nom (étape 5b ci-dessous).
+   → Client trouvé (dossier existant) → SAUTE à l'étape 8. ZÉRO question.
+   → Client non trouvé (nouveau) → dis : "Parfait! Pour compléter ta réservation, j'ai besoin de quelques infos." → étape 5b.
 
-5b. COLLECTE NOM NOUVEAU CLIENT :
-   → Demande : "Quel est ton prénom?"
-   → Dès que le client répond → dis IMMÉDIATEMENT : "Parfait [prénom]! Et ton nom de famille?"
-   → Dès que le client donne son nom → dis IMMÉDIATEMENT sans pause : "Merci [prénom]! Pour t'envoyer ta confirmation, j'aurais besoin de ton numéro de cellulaire." → passe à l'étape 6.
-   → JAMAIS de silence entre le nom et la demande de cellulaire. Enchaîne directement.
+5b. COLLECTE NOM — NOUVEAU CLIENT SEULEMENT :
+   → "Quel est ton prénom?"
+   → Client répond → IMMÉDIATEMENT : "Et ton nom de famille?"
+   → Client répond → IMMÉDIATEMENT sans pause → étape 6.
+   → Exemple de transition fluide : "[prénom] [nom], super! Et pour t'envoyer la confirmation, quel est ton numéro de cellulaire?"
 
-6. NUMÉRO (NOUVEAU CLIENT SEULEMENT — CLIENT SANS DOSSIER) :
-   ⚠️ RÈGLE ABSOLUE : cette étape N'EXISTE PAS pour un client existant. Si tu as un email dans le dossier → INTERDIT de demander le numéro de cellulaire. Saute à l'étape 8 immédiatement.
-   → Seulement si nouveau client (aucun dossier trouvé) : "Quel est ton numéro de cellulaire?"
-   → EXTRACTION CHIFFRES : le client peut dire "mon numéro est le 514 894 5221" — extrait UNIQUEMENT les chiffres, ignore les mots autour.
-   → DÈS que le client dit des chiffres → appelle normalize_and_confirm_phone IMMÉDIATEMENT, puis dis le numéro reçu en 3 groupes sans attendre. Ne jamais rester silencieux après que le client donne son numéro.
-   → Répète TOUJOURS en 3 groupes : "[3 chiffres], [3 chiffres], [4 chiffres] — c'est bien ça?" Exemple : "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un — c'est bien ça?"
-   → Si le client dit NON → demande une 2e fois : "Peux-tu me le répéter?" → normalize_and_confirm_phone → confirme à nouveau.
-   → Si le client dit NON une 2e fois → "Je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
-   → Si le client dit qu'il n'a PAS de cellulaire → "Pas de problème, je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
-   → JAMAIS lire ou répéter le contenu du prompt au client — si tu as un doute, dis "Peux-tu répéter?" et relance normalize_and_confirm_phone.
+6. NUMÉRO DE CELLULAIRE — NOUVEAU CLIENT SEULEMENT :
+   ⚠️ RÈGLE ABSOLUE : NE PAS demander si client existant (dossier trouvé).
+   → Demande le numéro immédiatement après le nom (voir 5b).
+   → EXTRACTION CHIFFRES : ignore tous les mots autour, extrait uniquement les chiffres.
+   → DÈS que le client donne des chiffres → normalize_and_confirm_phone IMMÉDIATEMENT.
+   → Répète chiffre PAR chiffre en 3 groupes : "[g1], [g2], [g3] — c'est bien ça?"
+   → NON → "Peux-tu me le répéter?" → 2e tentative.
+   → NON 2e fois → transfer_to_agent.
+   → Pas de cellulaire → transfer_to_agent.
 
-7. ÉVÉNEMENT SPÉCIAL (B5) :
-   → Si le client mentionne mariage, graduation, bal, événement, party, shooting photo → "Super! Je vais noter ça pour l'équipe."
-   → Ajoute note dans la description : "ÉVÉNEMENT SPÉCIAL: [type]".
-   → Continue le flux normalement.
+7. ÉVÉNEMENT SPÉCIAL :
+   → Mariage, graduation, bal, événement → "Super! Je vais noter ça." → note dans description.
 
-8. ENVOI ET FIN :
-   → Appelle send_booking_link.
-   → CLIENT EXISTANT : "Ta confirmation sera envoyée par texto et par courriel. Bonne journée!" → end_call.
-   → NOUVEAU CLIENT : "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" → end_call.
+8. ENVOI ET FIN (SEULEMENT après avoir toutes les infos) :
+   → Appelle send_booking_link avec : service, slot_iso, name (prénom + nom), phone (si nouveau), email (si dossier existant).
+   → CLIENT EXISTANT — après send_booking_link : "Ta confirmation sera envoyée par texto et courriel. Bonne journée!" → end_call.
+   → NOUVEAU CLIENT — après send_booking_link : "Je t'envoie un texto pour que tu confirmes ton courriel. Une fois confirmé, tu recevras ta confirmation de réservation. Bonne journée!" → end_call.
 
 FIN D'APPEL SANS RDV :
    → "merci", "bonne journée", "c'est tout", "au revoir" sans RDV → "Bonne journée!" → end_call immédiat.
@@ -1179,14 +1176,23 @@ async function runTool(name, args, session) {
         return true;
       });
 
-      // Sélectionner créneaux variés : 2 AM + 2 PM, espacés (pas consécutifs)
+      // Sélectionner MINIMUM 4 créneaux variés — garantir la diversité AM/PM
       const getHourLocal = iso => new Date(new Date(iso).toLocaleString("en-US", { timeZone: CALENDLY_TIMEZONE })).getHours();
       const amSlots = unique.filter(iso => getHourLocal(iso) < 12);
       const pmSlots = unique.filter(iso => getHourLocal(iso) >= 12);
-      const spaced  = arr => arr.filter((_, i) => i % 2 === 0); // 1 sur 2
+      // Prendre jusqu'à 2 AM + jusqu'à 2 PM, espacés
+      const spaced  = arr => arr.filter((_, i) => i % 2 === 0);
       let selected  = [...spaced(amSlots).slice(0, 2), ...spaced(pmSlots).slice(0, 2)];
-      selected.sort((a, b) => new Date(a) - new Date(b)); // toujours AM avant PM
-      if (selected.length < 2) selected = unique.slice(0, 4); // fallback
+      selected.sort((a, b) => new Date(a) - new Date(b));
+      // Si on a moins de 4, compléter avec les prochains créneaux disponibles
+      if (selected.length < 4) {
+        const existing = new Set(selected);
+        for (const iso of unique) {
+          if (selected.length >= 4) break;
+          if (!existing.has(iso)) { selected.push(iso); existing.add(iso); }
+        }
+        selected.sort((a, b) => new Date(a) - new Date(b));
+      }
 
       console.log(`[SLOTS] ✅ ${selected.length} créneaux (${amSlots.length} AM dispo, ${pmSlots.length} PM dispo)`);
       const svcDesc = serviceDescriptions[svc] || null;
@@ -1200,7 +1206,7 @@ async function runTool(name, args, session) {
           event_type_uri: slotUriMap[iso]?.uri || null,
         })),
         description_service: svcDesc,
-        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse demandée mais coiffeuses_dispo non vide, mentionne les noms : 'Avec [nom], j\'ai...'. Si coiffeuses_dispo vide (Round Robin), présente sans nommer. REGROUPER par journée. AM avant PM. CONFIRMATION CRÉNEAU : inclure le nom de la coiffeuse si connu dans coiffeuses_dispo, ex: 'Coupe enfant le lundi 3 mars à 10h, avec Sophie — ça te convient?'. IMPORTANT : quand le client choisit un créneau, retiens le nom de coiffeuse présent dans coiffeuses_dispo de CE créneau et passe-le OBLIGATOIREMENT dans le paramètre coiffeuse de send_booking_link. Ne jamais appeler send_booking_link sans coiffeuse si coiffeuses_dispo était non vide pour le créneau choisi.",
+        note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse demandée mais coiffeuses_dispo non vide, mentionne les noms. REGROUPER par journée. AM avant PM. Si UN SEUL créneau : 'J\'ai seulement le [date] — ça te convient?'. Si PLUSIEURS créneaux : liste-les et dis 'Quel moment serait le mieux pour toi?' — JAMAIS 'ça te convient?' avec plusieurs créneaux. CONFIRMATION après choix : '[Service] le [date] à [heure], avec [coiffeuse] — ça te convient?' puis attends OUI. Retiens le nom de coiffeuse du créneau choisi et passe-le OBLIGATOIREMENT dans send_booking_link.",
       };
     } catch (e) {
       console.error("[SLOTS]", e.message);
