@@ -40,7 +40,11 @@ const {
   CALENDLY_TIMEZONE     = "America/Toronto",
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
-  CALENDLY_EVENT_TYPE_URI_NONBINAIRE,
+  CALENDLY_EVENT_TYPE_URI_FEMME_COLOR,
+  CALENDLY_EVENT_TYPE_URI_FEMME_PLIS,
+  CALENDLY_EVENT_TYPE_URI_FEMME_COLOR_PLIS,
+  CALENDLY_EVENT_TYPE_URI_ENFANT,
+  CALENDLY_EVENT_TYPE_URI_AUTRE,
   CALENDLY_ORG_URI = "https://api.calendly.com/organizations/bb62d2e8-761e-48ed-9917-58e0a39126dd",
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
@@ -52,12 +56,15 @@ function envStr(key, fallback = "") {
   return v.trim().replace(/^["']|["']$/g, "");
 }
 
-const SALON_NAME       = envStr("SALON_NAME",       "Salon Coco");
-const SALON_CITY       = envStr("SALON_CITY",       "Magog Beach");
-const SALON_ADDRESS    = envStr("SALON_ADDRESS",    "Adresse non configurée");
-const SALON_HOURS      = envStr("SALON_HOURS",      "Heures non configurées");
-const SALON_PRICE_LIST = envStr("SALON_PRICE_LIST", "Prix non configurés");
-const SALON_LOGO_URL   = envStr("SALON_LOGO_URL",   "");
+const SALON_NAME        = envStr("SALON_NAME",        "Salon Coco");
+const SALON_CITY        = envStr("SALON_CITY",        "Magog Beach");
+const SALON_ADDRESS     = envStr("SALON_ADDRESS",     "Adresse non configurée");
+const SALON_HOURS       = envStr("SALON_HOURS",       "Heures non configurées");
+const SALON_PRICE_LIST  = envStr("SALON_PRICE_LIST",  "Prix non configurés");
+const SALON_LOGO_URL    = envStr("SALON_LOGO_URL",    "");
+const SALON_PAYMENT     = envStr("SALON_PAYMENT",     "Nous acceptons comptant, débit et carte de crédit.");
+const SALON_PARKING     = envStr("SALON_PARKING",     "Stationnement disponible directement sur place.");
+const SALON_ACCESS      = envStr("SALON_ACCESS",      "Le salon est accessible aux personnes à mobilité réduite.");
 
 const twilioClient = TWILIO_ACCOUNT_SID && TWILIO_AUTH_TOKEN
   ? twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN) : null;
@@ -117,7 +124,8 @@ function startCallLog(sid, callerNumber) {
     slot: null,
     clientNom: null,
     resumeClient: [],
-    questionsNonRepondues: [],
+    unanswered_questions: [],
+    domains: [],
     emailDomains: [],
     events: [],
   };
@@ -222,14 +230,28 @@ function slotToFrench(iso) {
 }
 
 function serviceUri(s) {
-  if (s === "homme")      return CALENDLY_EVENT_TYPE_URI_HOMME;
-  if (s === "femme")      return CALENDLY_EVENT_TYPE_URI_FEMME;
-  if (s === "nonbinaire") return CALENDLY_EVENT_TYPE_URI_NONBINAIRE;
-  return null;
+  const map = {
+    "homme":            CALENDLY_EVENT_TYPE_URI_HOMME,
+    "femme":            CALENDLY_EVENT_TYPE_URI_FEMME,
+    "femme_coloration": CALENDLY_EVENT_TYPE_URI_FEMME_COLOR,
+    "femme_plis":       CALENDLY_EVENT_TYPE_URI_FEMME_PLIS,
+    "femme_color_plis": CALENDLY_EVENT_TYPE_URI_FEMME_COLOR_PLIS,
+    "enfant":           CALENDLY_EVENT_TYPE_URI_ENFANT,
+    "autre":            CALENDLY_EVENT_TYPE_URI_AUTRE,
+  };
+  return map[s] || null;
 }
 
 function serviceLabel(s) {
-  return { homme: "coupe homme", femme: "coupe femme", nonbinaire: "coupe non binaire" }[s] || s;
+  return {
+    homme:            "coupe homme",
+    femme:            "coupe femme",
+    femme_coloration: "coupe femme + coloration",
+    femme_plis:       "coupe femme + mise en plis",
+    femme_color_plis: "coupe femme + coloration & mise en plis",
+    enfant:           "coupe enfant",
+    autre:            "coupe autre",
+  }[s] || s;
 }
 
 // ─── Calendly ─────────────────────────────────────────────────────────────────
@@ -279,7 +301,7 @@ async function getEventLocation(uri) {
 let coiffeuses = [];
 
 // URIs des event types Round Robin (chargés dynamiquement)
-let roundRobinUris = { homme: null, femme: null };
+let roundRobinUris = { homme: null, femme: null, femme_coloration: null, femme_plis: null, femme_color_plis: null, enfant: null, autre: null };
 
 async function loadCoiffeuses() {
   try {
@@ -324,33 +346,43 @@ async function loadCoiffeuses() {
       const t = (e.type || "").toLowerCase().replace(/[_\s]/g, "");
       return t.includes("roundrobin") || t === "group";
     };
-    const rrHomme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("homme"));
-    const rrFemme = eventTypes.find(e => isRR(e) && e.name?.toLowerCase().includes("femme"));
-    roundRobinUris.homme = rrHomme?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null;
-    roundRobinUris.femme = rrFemme?.uri || CALENDLY_EVENT_TYPE_URI_FEMME || null;
-    console.log(`[CALENDLY] Round Robin — Homme: ${roundRobinUris.homme ? "✅" : "❌"} | Femme: ${roundRobinUris.femme ? "✅" : "❌"}`);
+    // Round Robin chargé dans le bloc coiffeuses ci-dessous
 
-    // 4. Mapper chaque coiffeuse avec ses event types individuels
+    // 4. Mapper chaque coiffeuse avec ses event types individuels (tous services)
+    const svcMatch = (name, keywords) => keywords.some(k => name?.toLowerCase().includes(k));
     coiffeuses = staff.map(m => {
       const userUri = m.user?.uri;
-      const name    = m.user?.name;
-      const hommeET = eventTypes.find(e =>
-        e.profile?.owner === userUri && e.name?.toLowerCase().includes("homme")
-      );
-      const femmeET = eventTypes.find(e =>
-        e.profile?.owner === userUri && e.name?.toLowerCase().includes("femme")
-      );
+      const uname   = m.user?.name;
+      const find = (...kws) => eventTypes.find(e => e.profile?.owner === userUri && svcMatch(e.name, kws));
       return {
-        name,
+        name: uname,
         userUri,
         eventTypes: {
-          homme: hommeET?.uri || null,
-          femme: femmeET?.uri || null,
+          homme:            find("homme")?.uri || null,
+          femme:            find("femme")?.uri || null,
+          femme_coloration: find("coloration")?.uri || null,
+          femme_plis:       find("mise en plis", "plis")?.uri || null,
+          femme_color_plis: find("coloration & mise", "color & plis", "coloration et mise")?.uri || null,
+          enfant:           find("enfant")?.uri || null,
+          autre:            find("autre", "lgbtq", "non binaire", "nonbinaire")?.uri || null,
         }
       };
-    }).filter(c => c.eventTypes.homme || c.eventTypes.femme);
+    }).filter(c => Object.values(c.eventTypes).some(Boolean));
+
+    // Charger aussi les Round Robin pour tous les services
+    const findRR = (...kws) => eventTypes.find(e => isRR(e) && svcMatch(e.name, kws));
+    roundRobinUris = {
+      homme:            findRR("homme")?.uri || CALENDLY_EVENT_TYPE_URI_HOMME || null,
+      femme:            findRR("femme")?.uri || CALENDLY_EVENT_TYPE_URI_FEMME || null,
+      femme_coloration: findRR("coloration")?.uri || CALENDLY_EVENT_TYPE_URI_FEMME_COLOR || null,
+      femme_plis:       findRR("mise en plis", "plis")?.uri || CALENDLY_EVENT_TYPE_URI_FEMME_PLIS || null,
+      femme_color_plis: findRR("coloration & mise", "color & plis")?.uri || CALENDLY_EVENT_TYPE_URI_FEMME_COLOR_PLIS || null,
+      enfant:           findRR("enfant")?.uri || CALENDLY_EVENT_TYPE_URI_ENFANT || null,
+      autre:            findRR("autre", "lgbtq")?.uri || CALENDLY_EVENT_TYPE_URI_AUTRE || null,
+    };
 
     console.log(`[CALENDLY] ✅ ${coiffeuses.length} coiffeuses: ${coiffeuses.map(c => c.name).join(", ")}`);
+    console.log(`[CALENDLY] Round Robin: ${Object.entries(roundRobinUris).filter(([,v])=>v).map(([k])=>k).join(", ")}`);
   } catch(e) {
     console.error("[CALENDLY] ❌ Erreur loadCoiffeuses:", e.message);
   }
@@ -565,6 +597,9 @@ INFORMATIONS SALON :
 - Adresse : ${SALON_ADDRESS}
 - Heures : ${SALON_HOURS}
 - Prix : ${SALON_PRICE_LIST}
+- Paiement : ${SALON_PAYMENT}
+- Stationnement : ${SALON_PARKING}
+- Accessibilité : ${SALON_ACCESS}
 - Numéro appelant : ${callerNumber || "inconnu"}
 
 COMPORTEMENT FONDAMENTAL :
@@ -573,103 +608,122 @@ COMPORTEMENT FONDAMENTAL :
 - Tu ne remplis JAMAIS le silence. Le silence est normal au téléphone.
 - Maximum 1-2 phrases par tour. Jamais plus.
 - Tu ne poses qu'UNE seule question à la fois. Tu attends la réponse avant de continuer.
+- INTERRUPTION (B8) : si le client parle pendant que tu parles, arrête-toi immédiatement, écoute, puis reprends selon ce qu'il vient de dire. Ne répète pas ta phrase précédente.
 
 ACCUEIL :
-- Tu dis UNIQUEMENT : "Bienvenu au ${SALON_NAME} à ${SALON_CITY}, je m'appelle Hélène votre assistante virtuelle! Je suis là pour vous aider à planifier votre prochain rendez-vous."
-- Puis SILENCE ABSOLU — attends le message système qui va arriver immédiatement après.
-- Le système t'enverra TOUJOURS un message après l'intro pour te dire quoi dire : soit "Comment puis-je t'aider?" soit une suggestion personnalisée pour le client connu. Suis ce message exactement.
-- NE PAS improviser ou ajouter quoi que ce soit avant ce message système.
+- Dis UNIQUEMENT la phrase d'intro fournie par le système.
+- Puis SILENCE ABSOLU — attends le message système qui arrive immédiatement après.
+- Le système t'enverra TOUJOURS un message après l'intro. Suis-le exactement, mot pour mot.
+- NE PAS improviser ni ajouter quoi que ce soit avant ce message système.
 
-PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une phrase, traite-les toutes, ne repose pas de questions auxquelles il a déjà répondu.
+PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une phrase, traite-les toutes sans reposer de questions auxquelles il a déjà répondu.
 
-1. TYPE ET COIFFEUSE :
-   → Si le client dit déjà le type + coiffeuse + date dans sa première phrase → passe directement à l'étape 2 avec tous ces paramètres.
-   → Sinon demande le type (homme/femme) si inconnu.
-   → Coloration, mise en plis, teinture, balayage → transfer_to_agent immédiatement.
-   → Si le client mentionne coupe non binaire, queer, trans, non genrée, ou tout service LGBTQ+ → dis : "Pour s'assurer de bien répondre à tes besoins, je vais te mettre en contact avec un membre de notre équipe tout de suite!" → transfer_to_agent.
-   → Si type connu mais coiffeuse inconnue → demande : "Tu as une préférence pour une coiffeuse en particulier?"
-   → Interprète la réponse naturellement :
-     • Prénom mentionné → paramètre coiffeuse = ce prénom
-     • "peu importe", "n'importe qui", "pas de préférence", "non", "c'est égal" → PAS de paramètre coiffeuse
+1. TYPE DE SERVICE :
+   SERVICES DISPONIBLES — utilise ces valeurs exactes dans get_available_slots :
+   • "homme"            = coupe homme
+   • "femme"            = coupe femme
+   • "femme_coloration" = coupe femme + coloration
+   • "femme_plis"       = coupe femme + mise en plis
+   • "femme_color_plis" = coupe femme + coloration & mise en plis
+   • "enfant"           = coupe enfant (garçon ou fille)
+   • "autre"            = coupe autre (non binaire, queer, trans, etc.)
 
-2. DISPONIBILITÉS :
-   → LIMITE 90 JOURS : si la date demandée est à plus de 90 jours d'aujourd'hui → dis : "Cette date est un peu loin dans le temps, je vais te transférer à l'équipe qui pourra mieux t'aider!" → transfer_to_agent immédiatement. Ne cherche PAS de créneaux.
-   → Si date relative → calcule et confirme avant de chercher.
-   → Avant d'appeler get_available_slots, dis immédiatement : "Un instant, je regarde ça!" puis appelle l'outil.
-   → Si l'outil prend plus de 3 secondes, ajoute : "Merci de patienter." — termine cette phrase avant d'enchaîner. NE JAMAIS dire cela pendant ou juste après l'intro.
-   → Appelle get_available_slots avec le bon paramètre coiffeuse si demandé.
-   → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau que tu viens de proposer.
-   → Présente les créneaux avec la DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh" (ex: "mardi le 3 mars à 13h30"). JAMAIS juste "mardi à 13h30".
-   → REGROUPEMENT PAR JOURNÉE : si plusieurs créneaux sont le même jour, dis la date UNE SEULE FOIS puis liste les heures. Ex: "mardi le 3 mars à 9h, 9h30 et 10h, et mercredi le 4 mars à 14h".
-   → Si une coiffeuse a été demandée : commence par "Avec [nom coiffeuse], les disponibilités sont : [liste groupée]"
-   → Si aucune coiffeuse : "J'ai [liste groupée par journée] — tu as une préférence?"
-   → Si une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
-   → Si le client demande une heure précise qui N'EST PAS dans les créneaux retournés : dis "Désolée, le [jour] à [heure demandée] est déjà pris. J'ai plutôt [créneaux disponibles] — ça te convient?" Ne jamais proposer silencieusement d'autres plages sans dire que la plage demandée est prise.
-   → Si le client demande quelles coiffeuses sont disponibles (ex: "c'est qui les coiffeuses?", "qui est disponible?") : indique les noms présents dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. Dis simplement "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends avec les mêmes créneaux.
-   → Si le client insiste une 2e fois sur la même heure non disponible : dis "Je comprends que ce soit décevant! Je vais te transférer à notre équipe pour s'assurer de bien combler ta demande." → transfer_to_agent.
+   → Si le client dit déjà service + coiffeuse + date → passe directement à l'étape 3.
+   → Sinon demande le service si inconnu. Ex: "C'est pour une coupe homme, femme, enfant ou autre service?"
+   → Coloration seule ou mise en plis seule SANS coupe → transfer_to_agent. Mais "coupe + coloration" ou "coupe + mise en plis" → service "femme_coloration" ou "femme_plis".
+   → Coupe non binaire, queer, trans, non genrée, LGBTQ+ → service "autre" directement, pas de transfert.
+   → Si service connu mais coiffeuse inconnue → "Tu as une préférence pour une coiffeuse?"
+   → "peu importe", "n'importe qui", "pas de préférence" → PAS de paramètre coiffeuse.
+   → CHANGER DE COIFFEUSE (B7) : "autre coiffeuse", "pas avec [nom]" → accepte, demande "Tu as quelqu'un en tête?" et continue.
+   → LISTER LES SERVICES : si le client demande "c'est quoi vos services", "qu'est-ce que vous offrez", "qu'est-ce que vous faites" → appelle get_coiffeuses et liste les services_offerts sans répétition. Ne liste jamais le même service deux fois.
+
+2. RDV POUR UN ENFANT (B2) :
+   → "mon enfant", "ma fille", "mon garçon", "mon fils", "mon kid" → service = "enfant" → demande : "Quel est le prénom de l'enfant?"
+   → Utilise "Prénom / NomParent" comme nom de réservation (ex: "Emma / Bergeron").
+   → Ne redemande pas le type — "enfant" couvre garçon et fille.
+
+3. DISPONIBILITÉS :
+   → LIMITE 90 JOURS → transfer_to_agent si dépassé.
+   → Avant get_available_slots → dis "Un instant, je regarde ça!" puis appelle.
+   → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau proposé.
+   → DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh". JAMAIS "mardi à 13h30".
+   → REGROUPEMENT PAR JOURNÉE : même jour → date une fois puis heures. Ex: "mardi le 3 mars à 9h et 10h, et mercredi le 4 mars à 14h".
+   → Coiffeuse demandée : "Avec [nom], les disponibilités sont : [liste]"
+   → Une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
+   → Aucune coiffeuse : "J'ai [liste] — tu as une préférence?"
+   → Heure demandée non disponible : "Désolée, [heure] est déjà pris. J'ai plutôt [liste] — ça te convient?"
+   → Si le client demande quelles coiffeuses sont disponibles → indique les noms dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends les mêmes créneaux.
+   → Client insiste 2e fois sur même heure → "Je comprends que ce soit décevant! Je vais te transférer à notre équipe." → transfer_to_agent.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
-3. CONFIRMATION créneau :
-   → Regroupe TOUT : "Coupe [homme/femme] le [jour complet] à [heure][, avec [coiffeuse] si coiffeuse choisie] — ça te convient?"
+4. CONFIRMATION créneau :
+   → "[Service complet ex: Coupe femme + coloration] le [jour complet] à [heure][, avec [coiffeuse]][, pour [prénom enfant] si enfant] — ça te convient?"
    → Attends OUI avant de continuer.
 
-4. DOSSIER :
-   → Si le système t'a déjà fourni les infos du client au début de l'appel (prefetch) → NE PAS appeler lookup_existing_client. Utilise directement l'email et le nom déjà connus → passe à l'étape 7.
-   → Sinon → appelle lookup_existing_client.
-   → Trouvé → passe à l'étape 7 directement. ZÉRO question supplémentaire (pas de nom, pas de numéro, pas de courriel).
-   → Non trouvé → demande le nom.
+5. DOSSIER :
+   → Si le système a fourni les infos client en début d'appel → NE PAS appeler lookup_existing_client. Utilise l'email et nom connus → passe à l'étape 8.
+   → Sinon → appelle lookup_existing_client silencieusement.
+   → Trouvé → passe à l'étape 8. ZÉRO question supplémentaire.
+   → Non trouvé → demande le prénom et nom.
 
-5. NUMÉRO (NOUVEAU CLIENT SEULEMENT) :
-   → Demande le numéro de cellulaire : "Quel est ton numéro de cellulaire?" → attends la réponse → appelle normalize_and_confirm_phone → confirme : "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
+6. NUMÉRO (NOUVEAU CLIENT SEULEMENT) :
+   → "Quel est ton numéro de cellulaire?" → normalize_and_confirm_phone → "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
 
-6. (ÉTAPE SUPPRIMÉE POUR CLIENT EXISTANT — on passe directement à 7)
+7. ÉVÉNEMENT SPÉCIAL (B5) :
+   → Si le client mentionne mariage, graduation, bal, événement, party, shooting photo → "Super! Je vais noter ça pour l'équipe."
+   → Ajoute note dans la description : "ÉVÉNEMENT SPÉCIAL: [type]".
+   → Continue le flux normalement.
 
-7. ENVOI ET FIN :
+8. ENVOI ET FIN :
    → Appelle send_booking_link.
-   → CLIENT EXISTANT (email connu) : après succès → dis EXACTEMENT : "Ta confirmation sera envoyée par texto et par courriel avec les informations au dossier. Bonne journée!" Puis STOP — zéro mot de plus.
-   → NOUVEAU CLIENT (pas d'email) : après succès → dis EXACTEMENT : "Pour confirmer ta réservation, je t'envoie un texto afin que tu confirmes ton courriel. Une fois fait, tu recevras la confirmation par courriel et par texto. Bonne journée!" Puis STOP — zéro mot de plus.
-   → Appelle end_call IMMÉDIATEMENT après avoir dit la phrase — sans délai, sans rien ajouter.
+   → CLIENT EXISTANT : "Ta confirmation sera envoyée par texto et par courriel. Bonne journée!" → end_call.
+   → NOUVEAU CLIENT : "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" → end_call.
 
 FIN D'APPEL SANS RDV :
-   → Client dit "merci", "bonne journée", "c'est tout", "au revoir" SANS avoir réservé :
-   → Dis : "Bonne journée!" — rien d'autre.
-   → Appelle end_call IMMÉDIATEMENT.
-   → Ne mentionne JAMAIS confirmation, texto ou RDV si rien n'a été réservé.
+   → "merci", "bonne journée", "c'est tout", "au revoir" sans RDV → "Bonne journée!" → end_call immédiat.
+   → Ne mentionne JAMAIS confirmation ou texto si rien n'a été réservé.
    → ATTENTION : si send_booking_link vient d'être appelé avec succès, NE PAS passer par cette règle — l'appel se ferme déjà automatiquement.
 
-RÈGLE ABSOLUE SUR end_call :
-   → end_call = OBLIGATOIRE après toute salutation finale, sans exception.
-   → Ne jamais laisser l'appel ouvert après avoir dit au revoir.
-   → Ne jamais demander "Est-ce que je peux faire autre chose?" — fin directe.
+RÈGLE ABSOLUE end_call :
+   → Après toute salutation finale, sans exception. Jamais "Est-ce que je peux faire autre chose?".
 
-RÈGLES :
-- Prix, adresse, heures → réponds directement, sans appeler d'outil.
-- N'invente jamais un nom. Utilise UNIQUEMENT ce que le client dit ou ce qui est dans le dossier.
-- Ne propose jamais liste d'attente ni rappel.
-- INTERDIT : dire "Parfait".
-- ANNULATION RDV : si le client veut annuler → appelle get_existing_appointment. Si RDV trouvé avec cancel_url → envoie le lien SMS et informe le client. Si pas de lien → transfer_to_agent.
-- MODIFICATION RDV : si le client veut modifier → appelle get_existing_appointment pour confirmer le RDV existant → dis "Pour modifier, utilise le lien dans ton texto de confirmation, ou je te transfère à l'équipe." → transfer_to_agent si besoin.
-- CONFIRMATION RDV : si le client veut confirmer son RDV → appelle get_existing_appointment → lis-lui la date/heure trouvée → dis "Bonne journée!" → end_call.
-- RETARD : si le client dit qu'il sera en retard → dis : "Je vais avertir l'équipe tout de suite." → transfer_to_agent.
-- CADEAU / BON CADEAU : tu ne gères pas les bons cadeaux → transfer_to_agent.
-- CLIENT EN COLÈRE / PLAINTE : si le client exprime une insatisfaction sur un service reçu → dis : "Je suis désolée d'apprendre ça. Je vais te mettre en contact avec l'équipe tout de suite." → transfer_to_agent.
-- RAPPEL DE CONFIRMATION : si le client appelle pour confirmer ou reconfirmer un RDV existant → dis : "Ton rendez-vous est bien noté dans notre système. À bientôt!" → end_call.
-- APRÈS CHOIX DE CRÉNEAU : ne re-demande JAMAIS le service ou la coiffeuse si tu les connais déjà — tu les as en mémoire depuis le début de la conversation.
-- NE JAMAIS dire "je vais vérifier si tu as un dossier" ou "je vais regarder si tu as un compte" si le dossier a déjà été chargé au début de l'appel.
-- MOT ISOLÉ : si tu reçois UN seul mot sans contexte ("bye", "oui", "non", "ok", un bruit, une lettre, un mot en langue étrangère) → NE PAS réagir comme si c'était une instruction. Attends une phrase complète. Un vrai client va toujours dire au minimum 3-4 mots.
-- SILENCE ou BRUIT : si la transcription ressemble à un bruit, une interjection sans sens, ou un mot seul qui ne fait pas suite à une conversation → ignore-le et attends que le client parle vraiment.
-- QUESTION HORS PORTÉE : si tu ne connais pas la réponse (ex: si c'est près d'un commerce, d'une rue, parking, etc.) → dis EXACTEMENT : "Désolée, je ne peux pas répondre à ça. Est-ce que tu veux que je te transfère à l'équipe?" → Si OUI → transfer_to_agent. Si NON → dis "Comment puis-je t'aider?" SANS te re-présenter.
+FAQ SALON (B3+B4) — réponds directement sans outil :
+- Paiement → utilise les infos SALON ci-dessus.
+- Stationnement → utilise les infos SALON ci-dessus.
+- Accessibilité → utilise les infos SALON ci-dessus.
+- Durée service (B4) : "En général une coupe prend environ 30 à 45 minutes. Pour plus de détails je peux te transférer à l'équipe."
+
+GESTION RDV EXISTANTS :
+- ANNULATION : get_existing_appointment → si cancel_url → SMS lien → "Lien envoyé! Tu veux prendre un nouveau RDV?" → si non → end_call. Si pas de lien → transfer_to_agent.
+- MODIFICATION : get_existing_appointment → confirme date → "Pour modifier, utilise le lien dans ton texto, ou je te transfère." → transfer_to_agent si besoin.
+- CONFIRMATION RDV : get_existing_appointment → lis date → "Bonne journée!" → end_call.
+- RETARD : "Je vais avertir l'équipe." → transfer_to_agent.
+- CHANGER NUMÉRO (B6) : "Pour modifier les informations de ton dossier, je vais te mettre en contact avec l'équipe." → transfer_to_agent.
+
+AUTRES SCÉNARIOS :
+- CADEAU / BON CADEAU → transfer_to_agent.
+- CLIENT EN COLÈRE / PLAINTE → "Je suis désolée d'apprendre ça. Je vais te mettre en contact avec l'équipe." → transfer_to_agent.
+- RAPPEL CONFIRMATION RDV : si le client appelle pour confirmer un RDV existant → appelle get_existing_appointment → lis la date/heure → "Bonne journée!" → end_call.
+- QUESTION HORS PORTÉE → dis EXACTEMENT : "Désolée, je ne peux pas répondre à ça. Est-ce que tu veux que je te transfère à l'équipe?" → OUI → transfer_to_agent. NON → "Comment puis-je t'aider?" sans se re-présenter.
 - Ne jamais supposer ou inventer une réponse à une question que tu ne connais pas.
 
 INTERPRÉTATION NATURELLE — le client ne parle pas comme un robot :
-- "non peu importe", "n'importe qui", "peu importe", "c'est égal", "pas de préférence", "whatever", "ça m'est égal" → signifie PAS DE PRÉFÉRENCE de coiffeuse → continue sans coiffeuse spécifique
-- "oui", "correct", "ok", "c'est beau", "exactement", "en plein ça", "c'est ça", "ouais" → signifie OUI → continue
-- "non", "pas vraiment", "pas nécessairement", "pas sûr" → signifie NON → ajuste en conséquence
-- Si la réponse est ambiguë → interprète selon le contexte de la question posée
-- Ne demande JAMAIS de répéter si le sens est compréhensible
+- "non peu importe", "n'importe qui", "peu importe", "c'est égal", "pas de préférence", "whatever", "ça m'est égal" → PAS DE PRÉFÉRENCE coiffeuse → continue sans coiffeuse spécifique.
+- "oui", "correct", "ok", "c'est beau", "exactement", "en plein ça", "c'est ça", "ouais" → OUI → continue.
+- "non", "pas vraiment", "pas nécessairement", "pas sûr" → NON → ajuste en conséquence.
+- Ambiguïté → interprète selon le contexte de la question posée. Ne demande JAMAIS de répéter si le sens est compréhensible.
+
+RÈGLES ABSOLUES :
+- N'invente jamais un nom. Utilise UNIQUEMENT ce que le client dit ou ce qui est dans le dossier.
+- Ne propose jamais liste d'attente ni rappel.
+- INTERDIT : dire "Parfait".
+- MOT ISOLÉ : si tu reçois UN seul mot sans contexte ("bye", "oui", "non", "ok", un bruit, une lettre, un mot en langue étrangère) → NE PAS réagir comme si c'était une instruction. Attends une phrase complète.
+- SILENCE ou BRUIT : si la transcription ressemble à un bruit, une interjection sans sens, ou un mot seul → ignore-le et attends que le client parle vraiment.
+- NE JAMAIS dire "je vais vérifier si tu as un dossier" si déjà chargé en début d'appel.
+- APRÈS CHOIX DE CRÉNEAU : ne re-demande JAMAIS le service ou la coiffeuse déjà connus.
 
 TRANSFERT À UN HUMAIN — SEULEMENT si le client demande EXPLICITEMENT :
-- Mots clés clairs : "agent", "humain", "parler à quelqu'un", "parler à une personne", "réceptionniste"
+- Mots clés clairs : "agent", "humain", "parler à quelqu'un", "parler à une personne", "réceptionniste", "Équipe"
 - Frustration répétée (3e fois qu'il dit la même chose sans être compris)
 - Sacres répétés avec ton impatient
 - Si Hélène ne comprend vraiment pas après 2 tentatives → "Désolée, je vais te transférer à l'équipe!" → transfer_to_agent
@@ -686,7 +740,7 @@ const TOOLS = [
     parameters: {
       type: "object",
       properties: {
-        service:    { type: "string", enum: ["homme", "femme", "nonbinaire"] },
+        service:    { type: "string", enum: ["homme", "femme", "femme_coloration", "femme_plis", "femme_color_plis", "enfant", "autre"] },
         coiffeuse:  { type: "string", description: "Prénom de la coiffeuse souhaitée. Omets si pas de préférence." },
         jour:       { type: "string", description: "Jour de la semaine UNIQUEMENT en un mot: 'lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi'. Ne jamais mettre 'prochain' ou autre qualificatif." },
         periode:    { type: "string", enum: ["matin", "après-midi", "soir"], description: "Période souhaitée. Omets si non mentionnée." },
@@ -866,9 +920,8 @@ async function runTool(name, args, session) {
       if (coiffeuses.length === 0) await loadCoiffeuses();
 
       // Déterminer quelles coiffeuses chercher
-      let coiffeusesCibles = coiffeuses.filter(c =>
-        args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme
-      );
+      const svc = args.service || "homme";
+      let coiffeusesCibles = coiffeuses.filter(c => c.eventTypes[svc]);
 
       // Filtrer par coiffeuse demandée si spécifiée
       if (args.coiffeuse) {
@@ -891,8 +944,8 @@ async function runTool(name, args, session) {
       }
 
       // Si pas de coiffeuse spécifique → utiliser Round Robin (une coiffeuse sera assignée par Calendly)
-      if (!args.coiffeuse && roundRobinUris[args.service === "femme" ? "femme" : "homme"]) {
-        const rrUri = roundRobinUris[args.service === "femme" ? "femme" : "homme"];
+      if (!args.coiffeuse && roundRobinUris[svc]) {
+        const rrUri = roundRobinUris[svc];
         const rrSlots = await getSlots(rrUri, startDate, searchEnd);
         const slotCoiffeuseRR = {};
         for (const iso of rrSlots) slotCoiffeuseRR[iso] = ["disponible"];
@@ -911,16 +964,16 @@ async function runTool(name, args, session) {
 
       // Fallback Railway si pas de coiffeuses dans le cache
       if (coiffeusesCibles.length === 0) {
-        const fallbackUri = serviceUri(args.service);
-        if (!fallbackUri) return { error: "Aucun event type configuré pour ce service." };
-        coiffeusesCibles = [{ name: "disponible", eventTypes: { homme: fallbackUri, femme: fallbackUri } }];
+        const fallbackUri = serviceUri(svc);
+        if (!fallbackUri) return { error: `Aucun event type configuré pour le service "${svc}".` };
+        coiffeusesCibles = [{ name: "disponible", eventTypes: { [svc]: fallbackUri } }];
       }
 
       // Récupérer les slots de toutes les coiffeuses cibles — un seul appel par coiffeuse
       const slotCoiffeuse = {}; // iso -> [noms]
       const slotUriMap    = {}; // iso -> { uri, coiffeuse } — construit ICI, pas après
       for (const c of coiffeusesCibles) {
-        const cUri = args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme;
+        const cUri = c.eventTypes[svc] || c.eventTypes.femme || c.eventTypes.homme;
         if (!cUri) continue;
         const cSlots = await getSlots(cUri, startDate, searchEnd);
         for (const iso of cSlots) {
@@ -1100,7 +1153,7 @@ async function runTool(name, args, session) {
     if (!uri && args.coiffeuse) {
       const match = coiffeuses.find(c => c.name.toLowerCase().includes(args.coiffeuse.toLowerCase()));
       if (match) {
-        uri = args.service === "femme" ? match.eventTypes.femme : match.eventTypes.homme;
+        uri = match.eventTypes[args.service] || match.eventTypes.femme || match.eventTypes.homme;
         uriSource = "coiffeuse " + match.name;
       }
     }
@@ -1230,16 +1283,25 @@ async function runTool(name, args, session) {
 
   if (name === "get_coiffeuses") {
     if (coiffeuses.length === 0) await loadCoiffeuses();
+    const SVC_LABELS = {
+      homme:"coupe homme", femme:"coupe femme",
+      femme_coloration:"coupe femme + coloration",
+      femme_plis:"coupe femme + mise en plis",
+      femme_color_plis:"coupe femme + coloration & mise en plis",
+      enfant:"coupe enfant", autre:"coupe autre",
+    };
     const liste = coiffeuses.map(c => ({
       nom: c.name,
-      services: [
-        c.eventTypes.homme ? "homme" : null,
-        c.eventTypes.femme ? "femme" : null,
-      ].filter(Boolean)
+      services: Object.entries(c.eventTypes).filter(([,v])=>v).map(([k])=>SVC_LABELS[k]||k)
     }));
+    // Services uniques offerts par le salon (dédupliqués)
+    const allServices = [...new Set(coiffeuses.flatMap(c =>
+      Object.entries(c.eventTypes).filter(([,v])=>v).map(([k])=>SVC_LABELS[k]||k)
+    ))];
     return {
       coiffeuses: liste,
-      message: `Coiffeuses disponibles : ${liste.map(c => c.nom).join(", ")}. Présente-les au client et demande sa préférence. Si pas de préférence, dis que tu vas prendre la première disponible.`
+      services_offerts: allServices,
+      message: `Services offerts : ${allServices.join(", ")}. Coiffeuses : ${liste.map(c => c.nom).join(", ")}. Présente les services au client selon sa demande. Pour chaque service, indique les coiffeuses disponibles. Ne liste pas un même service en double.`
     };
   }
 
@@ -1417,14 +1479,19 @@ app.get("/dashboard", (req, res) => {
         <div class="resume-title">📝 Ce que le client a dit</div>
         ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
       </div>` : ""}
-      ${log.questionsNonRepondues?.length ? `
+      ${log.unanswered_questions?.length ? `
       <div class="resume" style="border-left:3px solid #f59e0b;background:#1a1200">
         <div class="resume-title">❓ Questions non répondues</div>
-        ${log.questionsNonRepondues.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+        ${log.unanswered_questions.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+      </div>` : ""}
+      ${log.domains?.length ? `
+      <div class="resume" style="border-left:3px solid #10b981;background:#001a0f">
+        <div class="resume-title">🏷️ Thèmes abordés</div>
+        ${log.domains.map(d => `<div class="resume-line"><span class="rnum">•</span>${d}</div>`).join("")}
       </div>` : ""}
       ${log.emailDomains?.length ? `
       <div class="resume" style="border-left:3px solid #6366f1;background:#0f0020">
-        <div class="resume-title">📧 Domaines email utilisés</div>
+        <div class="resume-title">📧 Domaines email</div>
         ${log.emailDomains.map(d => `<div class="resume-line"><span class="rnum">@</span>${d}</div>`).join("")}
       </div>` : ""}
       <div class="events">
@@ -1883,6 +1950,21 @@ wss.on("connection", (twilioWs) => {
               if (!cl.emailDomains) cl.emailDomains = [];
               if (!cl.emailDomains.includes(domain)) cl.emailDomains.push(domain);
             }
+            // Capturer domaines thématiques (A2)
+            if (!cl.domains) cl.domains = [];
+            const domainMap = [
+              ["paiement","carte","débit","virement","argent","cash","comptant"],
+              ["stationnement","parking","stationner","auto","voiture"],
+              ["accessibilité","mobilité réduite","fauteuil","handicap","wheelchair"],
+              ["durée","temps","combien de temps","long"],
+              ["mariage","mariée","graduation","événement","bal"],
+              ["enfant","garçon","fille","mon kid","kid"],
+              ["annulation","annuler","modifier","changer","repousser"],
+              ["coiffeuse","styliste","changer de","autre coiffeuse"],
+            ];
+            for (const [theme, ...kws] of domainMap) {
+              if (kws.some(k => t.includes(k)) && !cl.domains.includes(theme)) cl.domains.push(theme);
+            }
           }
         }
         break;
@@ -1893,15 +1975,14 @@ wss.on("connection", (twilioWs) => {
         const txt = ev.transcript?.trim();
         if (txt && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "helene", txt);
-          // Détecter si Hélène dit qu'elle ne peut pas répondre → question non répondue
+          // Détecter si Hélène dit qu'elle ne peut pas répondre → unanswered_questions (A1)
           const tl = txt.toLowerCase();
-          if (tl.includes("je ne peux pas répondre") || tl.includes("je ne sais pas") || tl.includes("je peux pas répondre à ça")) {
+          if (tl.includes("je ne peux pas répondre") || tl.includes("je ne sais pas") || tl.includes("je peux pas répondre à ça") || tl.includes("je suis désolée, je ne")) {
             const cl = callLogs.get(session.twilioCallSid);
             if (cl) {
-              // Trouver la dernière phrase du client comme contexte
               const lastClient = [...(cl.resumeClient || [])].pop() || "?";
-              if (!cl.questionsNonRepondues) cl.questionsNonRepondues = [];
-              if (!cl.questionsNonRepondues.includes(lastClient)) cl.questionsNonRepondues.push(lastClient);
+              if (!cl.unanswered_questions) cl.unanswered_questions = [];
+              if (!cl.unanswered_questions.includes(lastClient)) cl.unanswered_questions.push(lastClient);
             }
           }
         }
