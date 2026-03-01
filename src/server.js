@@ -718,7 +718,7 @@ MAIS si le mot apparaît dans une question ou demande de service ("qui sont les 
 Règle simple : est-ce que le client DEMANDE À PARLER à quelqu'un? OUI → transfert. NON → réponds.
 
 COMPORTEMENT FONDAMENTAL :
-- Tu réponds TOUJOURS quand le client parle — jamais de silence radio après une réponse. Si le client dit "ok", "parfait", "merci", "oui", "non", "d'accord" → accuse réception brièvement ("Parfait!", "Très bien!", "Noté!") puis continue naturellement.
+- Tu réponds TOUJOURS quand le client parle — ZÉRO silence radio. Si le client dit "ok", "parfait", "merci", "oui", "non", "d'accord", "exact", "c'est ça", "effectivement", "absolument" → accuse réception brièvement ("Parfait!", "Très bien!", "Noté!", "Super!") puis continue immédiatement vers la prochaine étape logique.
 - Tu réponds UNIQUEMENT à ce que le client vient de dire. Rien de plus.
 - Après chaque phrase ou question, tu ARRÊTES de parler et tu ATTENDS.
 - Tu ne remplis JAMAIS le silence. Le silence est normal au téléphone.
@@ -774,8 +774,9 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → REGROUPEMENT PAR JOURNÉE : même jour → date une fois puis heures. Ex: "mardi le 3 mars à 9h et 10h, et mercredi le 4 mars à 14h".
    → Coiffeuse demandée : "Avec [nom], les disponibilités sont : [liste]"
    → Une seule option : "J'ai seulement le [jour le X mois à Hh] — ça te convient?"
-   → Aucune coiffeuse : "J'ai [liste] — tu as une préférence?"
-   → Heure demandée non disponible : "Désolée, [heure] est déjà pris. J'ai plutôt [liste] — ça te convient?"
+   → Aucune coiffeuse : "J'ai [liste] — quel moment serait le mieux pour toi?"
+   → Heure demandée non disponible : "Désolée, [heure] est déjà pris. J'ai plutôt [liste] — quel moment te convient?"
+   → RÈGLE ABSOLUE : si tu proposes PLUSIEURS créneaux, JAMAIS dire "ça te convient?" ou "est-ce que ça te convient?" — dis toujours "Quel moment serait le mieux pour toi?" ou "Lequel te convient le mieux?"
    → Si le client demande quelles coiffeuses sont disponibles → indique les noms dans coiffeuses_dispo des créneaux déjà retournés — NE PAS rappeler get_available_slots. "Les coiffeuses disponibles sont [noms]. Tu as une préférence?" puis reprends les mêmes créneaux.
    → Client insiste 2e fois sur même heure → "Je comprends que ce soit décevant! Je vais te transférer à notre équipe." → transfer_to_agent.
    → AUCUN CRÉNEAU disponible pour la période demandée → dis : "Je n'ai pas de disponibilité [cette semaine / ce jour-là]. Je peux regarder [la semaine prochaine / une autre journée] si tu veux?" → si OUI → rappelle get_available_slots avec offset_semaines:1 ou nouvelle date. Si NON → transfer_to_agent.
@@ -792,7 +793,13 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → Si le système a fourni les infos client en début d'appel (prefetch) → NE PAS appeler lookup_existing_client. Email et nom sont déjà connus → SAUTE directement à l'étape 8. AUCUNE question.
    → Sinon → appelle lookup_existing_client silencieusement.
    → Trouvé → SAUTE directement à l'étape 8. ZÉRO question (pas de nom, pas de numéro, pas de courriel).
-   → Non trouvé → demande le prénom et nom, puis continue à l'étape 6.
+   → Non trouvé → demande le prénom et nom (étape 5b ci-dessous).
+
+5b. COLLECTE NOM NOUVEAU CLIENT :
+   → Demande : "Quel est ton prénom?"
+   → Dès que le client répond → dis IMMÉDIATEMENT : "Parfait [prénom]! Et ton nom de famille?"
+   → Dès que le client donne son nom → dis IMMÉDIATEMENT sans pause : "Merci [prénom]! Pour t'envoyer ta confirmation, j'aurais besoin de ton numéro de cellulaire." → passe à l'étape 6.
+   → JAMAIS de silence entre le nom et la demande de cellulaire. Enchaîne directement.
 
 6. NUMÉRO (NOUVEAU CLIENT SEULEMENT — CLIENT SANS DOSSIER) :
    ⚠️ RÈGLE ABSOLUE : cette étape N'EXISTE PAS pour un client existant. Si tu as un email dans le dossier → INTERDIT de demander le numéro de cellulaire. Saute à l'étape 8 immédiatement.
@@ -1256,13 +1263,17 @@ async function runTool(name, args, session) {
       message: "Numéro invalide — demande au client de répéter.",
     };
     const digs = phone.replace(/\D/g,"").slice(-10);
-    const spoken = digs.slice(0,3) + " " + digs.slice(3,6) + " " + digs.slice(6);
+    const digitWords = {"0":"zéro","1":"un","2":"deux","3":"trois","4":"quatre","5":"cinq","6":"six","7":"sept","8":"huit","9":"neuf"};
+    const spellGroup = g => g.split("").map(d => digitWords[d]||d).join("-");
+    const g1 = spellGroup(digs.slice(0,3));
+    const g2 = spellGroup(digs.slice(3,6));
+    const g3 = spellGroup(digs.slice(6));
     return {
       valid: true,
       phone,
       formatted: fmtPhone(phone),
-      spoken_groups: spoken,
-      message: `Numéro reçu : ${spoken}. Répète IMMÉDIATEMENT au client en 3 groupes : "${digs.slice(0,3)}, ${digs.slice(3,6)}, ${digs.slice(6)} — c'est bien ça?" Attends OUI ou NON.`,
+      spoken_groups: g1 + " " + g2 + " " + g3,
+      message: `Numéro reçu. Dis IMMÉDIATEMENT : "${g1}, ${g2}, ${g3} — c'est bien ça?" — UN chiffre à la fois, séparés par une courte pause. Attends OUI ou NON.`,
     };
   }
 
@@ -2860,7 +2871,9 @@ wss.on("connection", (twilioWs) => {
       // Transcription de ce que le CLIENT dit (entrée audio)
       case "conversation.item.input_audio_transcription.completed": {
         const txt = ev.transcript?.trim();
-        if (txt && session?.twilioCallSid) {
+        // Logger UNIQUEMENT les vraies transcriptions — ignorer artefacts/bruits courts
+        const isArtefact = !txt || txt.length < 2 || /^[.!?,\s]+$/.test(txt);
+        if (txt && !isArtefact && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "client", txt);
           // Détection de sujets libres dans le texte
           const cl = callLogs.get(session.twilioCallSid);
@@ -2922,10 +2935,8 @@ wss.on("connection", (twilioWs) => {
       case "response.done": {
         // Détecter la fin de l'intro (première réponse seulement) et injecter le suivi client
         if (!session?.introPlayed && ev.response?.status === "completed") {
+          // MARQUER immédiatement — avant tout async/setTimeout — pour éviter double intro
           if (session) session.introPlayed = true;
-
-          // Annuler toute génération en cours avant d'injecter le followUp
-          // Évite que le modèle génère spontanément une 2e phrase après l'intro
           oaiWs.send(JSON.stringify({ type: "response.cancel" }));
 
           const prefetched = session?.prefetchedClient;
@@ -2949,8 +2960,9 @@ wss.on("connection", (twilioWs) => {
             if (cl) cl.clientType = "existant";
             followUp = buildFollowUp(prefetched);
           } else if (prefetched === false) {
-            // Nouveau client confirmé
-            followUp = "Dis EXACTEMENT et UNIQUEMENT : 'Comment puis-je t\'aider?' — UN SEUL SILENCE ABSOLU après. Zéro mot de plus. N\'ajoute rien.";
+            // Nouveau client — ATTENDRE que le client parle en premier (il a déjà dit "Salut" etc.)
+            // Le systemPrompt gère déjà ce cas : Hélène demande comment aider après l'intro
+            followUp = null; // Pas de followUp automatique — le client a déjà répondu à l'intro
           } else {
             // Lookup pas encore terminé — attendre 1.5s puis réessayer
             setTimeout(() => {
