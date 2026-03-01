@@ -1884,9 +1884,6 @@ function confirmDanger() {
 }
 document.getElementById('dangerModal').addEventListener('click', function(e){ if(e.target===this)closeDangerModal(); });
 </script>
-<div style="display:none">
-</p>
-
 <!-- Tuiles principales -->
 <div class="tiles">
   <div class="tile active" data-filter="all" onclick="filterCalls(this,'all')">
