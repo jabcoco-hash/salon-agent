@@ -170,6 +170,7 @@ function startCallLog(sid, callerNumber) {
     domains: [],
     emailDomains: [],
     events: [],
+    serverLog: [],  // logs Railway bruts liés à cet appel
   };
   callLogs.set(sid, log);
   // Garder max en mémoire
@@ -183,6 +184,15 @@ function logEvent(sid, type, msg) {
   if (!log) return;
   log.events.push({ ts: new Date().toISOString(), type, msg });
   // Pas de save ici — on save seulement à la fermeture pour éviter I/O excessif
+}
+
+// Ajouter une ligne brute dans le serverLog d'un appel
+function logRaw(sid, msg) {
+  const log = callLogs.get(sid);
+  if (!log) return;
+  if (!log.serverLog) log.serverLog = [];
+  const ts = new Date().toLocaleTimeString("fr-CA", { timeZone: "America/Montreal", hour12: false });
+  log.serverLog.push(`[${ts}] ${msg}`);
 }
 
 function closeCallLog(sid, result) {
@@ -718,7 +728,20 @@ MAIS si le mot apparaît dans une question ou demande de service ("qui sont les 
 Règle simple : est-ce que le client DEMANDE À PARLER à quelqu'un? OUI → transfert. NON → réponds.
 
 COMPORTEMENT FONDAMENTAL :
-- Tu réponds TOUJOURS quand le client parle — ZÉRO silence radio. Si le client dit "ok", "parfait", "merci", "oui", "non", "d'accord", "exact", "c'est ça", "effectivement", "absolument" → accuse réception brièvement ("Parfait!", "Très bien!", "Noté!", "Super!") puis continue immédiatement vers la prochaine étape logique.
+━━━ PATH CLIENT EXISTANT (dossier trouvé) ━━━━━━━━━━━━━━━━
+Si prefetch fourni OU lookup trouve le dossier :
+→ Après intro : "Comment puis-je t'aider, [prénom]?" avec contexte dernière visite si connu.
+→ Confirmation créneau → send_booking_link DIRECTEMENT (pas de questions nom/cell).
+→ Fin : "Ta confirmation sera envoyée par texto et courriel. Bonne journée!" → end_call.
+
+━━━ PATH NOUVEAU CLIENT (aucun dossier) ━━━━━━━━━━━━━━━━━
+Si lookup ne trouve rien ET pas de prefetch :
+→ Après intro : "Comment puis-je t'aider?"
+→ Confirmation créneau → collecter prénom → nom → cellulaire → send_booking_link.
+→ Fin : "Je t'envoie un texto pour confirmer ton courriel. Une fois confirmé, tu recevras ta confirmation. Bonne journée!" → end_call.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Tu réponds TOUJOURS quand le client parle — ZÉRO silence radio. Si le client dit "ok", "parfait", "merci", "oui", "non", "d'accord", "exact", "c'est ça", "effectivement", "absolument" → accuse réception brièvement ("Parfait!", "Très bien!", "Noté!", "Super!") puis continue IMMÉDIATEMENT vers la prochaine étape logique sans pause.
 - Tu réponds UNIQUEMENT à ce que le client vient de dire. Rien de plus.
 - Après chaque phrase ou question, tu ARRÊTES de parler et tu ATTENDS.
 - Tu ne remplis JAMAIS le silence. Le silence est normal au téléphone.
@@ -1017,21 +1040,25 @@ async function runTool(name, args, session) {
       // Coiffeuse sera mise à jour dans send_booking_link depuis coiffeuses_dispo si besoin
       if (!cl.demandes.includes("rdv")) cl.demandes.push("rdv");
       logEvent(sid, "tool", `Recherche créneaux — service:${args.service}${args.coiffeuse ? " coiffeuse:"+args.coiffeuse : ""}${args.date_debut ? " date:"+args.date_debut : ""}`);
+      logRaw(sid, `🔧 get_available_slots service=${args.service}${args.coiffeuse?" coiffeuse="+args.coiffeuse:""}${args.date_debut?" date="+args.date_debut:""}`);
     } else if (name === "get_salon_info") {
       if (!cl.demandes.includes(args.topic)) cl.demandes.push(args.topic);
       logEvent(sid, "tool", `Info salon demandée : ${args.topic}`);
     } else if (name === "lookup_existing_client") {
       logEvent(sid, "tool", "Recherche dossier client");
+      logRaw(sid, "🔍 lookup_existing_client");
     } else if (name === "send_booking_link") {
       cl.service    = args.service || cl.service;
       cl.coiffeuse  = args.coiffeuse || cl.coiffeuse;
       cl.slot       = args.slot_iso || null;
       cl.clientNom  = args.name || null;
       logEvent(sid, "booking", `Envoi confirmation — ${args.name} | ${args.service} | ${args.slot_iso}`);
+      logRaw(sid, `✅ send_booking_link — ${args.name} | ${args.service} | ${args.slot_iso}`);
     } else if (name === "end_call") {
       logEvent(sid, "info", "end_call déclenché");
     } else if (name === "transfer_to_agent") {
       logEvent(sid, "warn", "Transfert agent demandé");
+      logRaw(sid, "🔀 transfer_to_agent");
     }
   }
 
@@ -1227,7 +1254,7 @@ async function runTool(name, args, session) {
     }
     if (client) {
       console.log(`[LOOKUP] ✅ Client trouvé: ${client.name} (${client.email})`);
-      if (cl) { cl.clientNom = client.name; cl.clientType = "existant"; logEvent(sid, "info", `Client trouvé: ${client.name}`); }
+      if (cl) { cl.clientNom = client.name; cl.clientType = "existant"; logEvent(sid, "info", `Client trouvé: ${client.name}`); logRaw(sid, `👤 Client existant: ${client.name}`); }
       const prefSuggestion = client.typeCoupe || client.coiffeuse
         ? ` Désires-tu prendre rendez-vous pour une ${client.typeCoupe || "coupe"}${client.coiffeuse ? " avec " + client.coiffeuse : ""}?`
         : "";
@@ -1703,6 +1730,11 @@ app.get("/dashboard", (req, res) => {
             <span class="emsg">${e.msg}</span>
           </div>`).join("")}
       </div>
+      ${log.serverLog && log.serverLog.length ? `
+      <div style="padding:10px 14px;background:#0f172a;border-top:2px solid #1e293b">
+        <div style="font-size:.68rem;font-weight:700;color:#475569;letter-spacing:.08em;text-transform:uppercase;margin-bottom:6px">📋 Log Railway</div>
+        <pre style="font-size:.71rem;color:#94a3b8;line-height:1.65;white-space:pre-wrap;word-break:break-word;margin:0;font-family:monospace">${log.serverLog.join("\n")}</pre>
+      </div>` : ""}
     </details>`).join("") || "<p class='empty'>Aucun appel enregistré.</p>";
 
   res.type("text/html").send(`<!DOCTYPE html>
@@ -1807,8 +1839,52 @@ ${SALON_LOGO_URL
 <p class="sub">
   Les ${logs.length} derniers appels (max ${MAX_LOGS})
   &nbsp;·&nbsp;<a href="/dashboard">Rafraîchir</a>
-  &nbsp;·&nbsp;<a href="#" onclick="if(confirm('Vider tous les logs?')){fetch('/admin/logs/clear?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}">🗑 Vider</a>
-  &nbsp;·&nbsp;<a class="danger" href="#" onclick="if(confirm('Supprimer le fichier JSON?')){fetch('/admin/logs/delete-file?token='+prompt('Token admin:'),{method:'POST'}).then(()=>location.reload())}">❌ Supprimer fichier</a>
+  &nbsp;·&nbsp;<a href="#" onclick="openDangerModal('clear')">🗑 Vider</a>
+  &nbsp;·&nbsp;<a class="danger" href="#" onclick="openDangerModal('delete')">❌ Supprimer fichier</a>
+</div>
+
+<!-- Modal sécurisé pour actions dangereuses -->
+<div id="dangerModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;padding:28px 24px;max-width:380px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.2)">
+    <h3 id="dangerTitle" style="font-size:1rem;font-weight:700;color:#dc2626;margin-bottom:8px"></h3>
+    <p id="dangerDesc" style="font-size:.84rem;color:#6b7280;margin-bottom:16px"></p>
+    <input type="password" id="dangerToken" placeholder="ADMIN_TOKEN" autocomplete="new-password"
+      style="width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.9rem;margin-bottom:14px;box-sizing:border-box"
+      onkeydown="if(event.key==='Enter')confirmDanger()">
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button onclick="closeDangerModal()" style="padding:8px 18px;border:1.5px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-size:.85rem">Annuler</button>
+      <button onclick="confirmDanger()" style="padding:8px 20px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:.85rem">Confirmer</button>
+    </div>
+  </div>
+</div>
+<script>
+var _dangerAction = null;
+function openDangerModal(action) {
+  _dangerAction = action;
+  document.getElementById('dangerTitle').textContent = action === 'clear' ? '🗑 Vider tous les logs?' : '❌ Supprimer le fichier JSON?';
+  document.getElementById('dangerDesc').textContent = action === 'clear' ? 'Cette action efface tous les appels en mémoire.' : 'Cette action supprime définitivement le fichier call_logs.json.';
+  document.getElementById('dangerToken').value = '';
+  var m = document.getElementById('dangerModal'); m.style.display = 'flex';
+  setTimeout(function(){ document.getElementById('dangerToken').focus(); }, 50);
+}
+function closeDangerModal() {
+  document.getElementById('dangerModal').style.display = 'none';
+  _dangerAction = null;
+}
+function confirmDanger() {
+  var tok = document.getElementById('dangerToken').value.trim();
+  if (!tok) { document.getElementById('dangerToken').style.borderColor = '#dc2626'; return; }
+  var url = _dangerAction === 'clear' ? '/admin/logs/clear' : '/admin/logs/delete-file';
+  fetch(url + '?token=' + encodeURIComponent(tok), { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.ok) { closeDangerModal(); location.reload(); }
+      else { document.getElementById('dangerToken').style.borderColor = '#dc2626'; document.getElementById('dangerToken').value = ''; document.getElementById('dangerToken').placeholder = 'Token incorrect'; }
+    }).catch(function() { closeDangerModal(); location.reload(); });
+}
+document.getElementById('dangerModal').addEventListener('click', function(e){ if(e.target===this)closeDangerModal(); });
+</script>
+<div style="display:none">
 </p>
 
 <!-- Tuiles principales -->
@@ -2773,6 +2849,7 @@ app.post("/voice", (req, res) => {
   });
   startCallLog(CallSid, callerNorm);
   logEvent(CallSid, "info", `Appel entrant de ${callerNorm}`);
+  logRaw(CallSid, `📞 Appel entrant de ${callerNorm}`);
 
   const twiml   = new twilio.twiml.VoiceResponse();
   const connect = twiml.connect();
@@ -2881,6 +2958,7 @@ wss.on("connection", (twilioWs) => {
         const isArtefact = !txt || txt.length < 2 || /^[.!?,\s]+$/.test(txt);
         if (txt && !isArtefact && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "client", txt);
+          logRaw(session.twilioCallSid, `🙋 Client: "${txt}"`);
           // Détection de sujets libres dans le texte
           const cl = callLogs.get(session.twilioCallSid);
           if (cl) {
@@ -2924,6 +3002,7 @@ wss.on("connection", (twilioWs) => {
         const txt = ev.transcript?.trim();
         if (txt && session?.twilioCallSid) {
           logEvent(session.twilioCallSid, "helene", txt);
+          logRaw(session.twilioCallSid, `🤖 Hélène: "${txt.substring(0,120)}${txt.length>120?"...":""}"`);
           // Détecter si Hélène dit qu'elle ne peut pas répondre → unanswered_questions (A1)
           const tl = txt.toLowerCase();
           if (tl.includes("je ne peux pas répondre") || tl.includes("je ne sais pas") || tl.includes("je peux pas répondre à ça") || tl.includes("je suis désolée, je ne")) {
@@ -2943,7 +3022,8 @@ wss.on("connection", (twilioWs) => {
         if (!session?.introPlayed && ev.response?.status === "completed") {
           // MARQUER immédiatement — avant tout async/setTimeout — pour éviter double intro
           if (session) session.introPlayed = true;
-          oaiWs.send(JSON.stringify({ type: "response.cancel" }));
+          // Ne cancel que si une réponse est potentiellement active (évite l'erreur response_cancel_not_active)
+          // On tente le cancel mais on ignore l'erreur côté serveur
 
           const prefetched = session?.prefetchedClient;
 
@@ -2966,9 +3046,8 @@ wss.on("connection", (twilioWs) => {
             if (cl) cl.clientType = "existant";
             followUp = buildFollowUp(prefetched);
           } else if (prefetched === false) {
-            // Nouveau client — ATTENDRE que le client parle en premier (il a déjà dit "Salut" etc.)
-            // Le systemPrompt gère déjà ce cas : Hélène demande comment aider après l'intro
-            followUp = null; // Pas de followUp automatique — le client a déjà répondu à l'intro
+            // Nouveau client confirmé — injecter "Comment puis-je t'aider?" obligatoirement
+            followUp = "Dis EXACTEMENT et UNIQUEMENT cette phrase : \"Comment puis-je t\'aider?\" puis SILENCE ABSOLU. Attends que le client parle. Ne génère rien d\'autre.";
           } else {
             // Lookup pas encore terminé — attendre 1.5s puis réessayer
             setTimeout(() => {
@@ -3081,6 +3160,11 @@ wss.on("connection", (twilioWs) => {
       }
 
       case "error":
+        // Ignorer response_cancel_not_active — inoffensif, survient si intro terminée avant le cancel
+        if (ev.error?.code === "response_cancel_not_active") {
+          console.log("[OAI] Cancel ignoré — aucune réponse active (normal)");
+          break;
+        }
         console.error("[OAI ERROR]", JSON.stringify(ev.error));
         break;
     }
