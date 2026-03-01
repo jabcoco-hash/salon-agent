@@ -504,38 +504,60 @@ async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiff
     return;
   }
   try {
-    // Anti-doublon : chercher si ce numéro existe déjà
-    const searchR = await fetch(
-      `https://people.googleapis.com/v1/people:searchContacts?query=${encodeURIComponent(phone)}&readMask=names,emailAddresses,phoneNumbers`,
+    // ── Anti-doublon fiable : listConnections (même méthode que lookupClientByPhone) ──
+    // searchContacts est peu fiable — on utilise la liste complète et on cherche par numéro
+    const connR = await fetch(
+      `https://people.googleapis.com/v1/people/me/connections?personFields=names,emailAddresses,phoneNumbers,userDefined&pageSize=1000`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
-    const searchJ = await searchR.json();
-    const existingPerson = searchJ.results?.find(r =>
-      (r.person?.phoneNumbers || []).some(p => samePhone(p.value, phone))
-    )?.person;
+    const connJ = await connR.json();
+    const connections = connJ.connections || [];
 
-    if (existingPerson) {
-      const resourceName = existingPerson.resourceName;
-      const existingEmail = existingPerson.emailAddresses?.[0]?.value;
-      // Mettre à jour email + champs SalonCoco
-      const updateFields = {};
-      if (email && email !== existingEmail) updateFields.emailAddresses = [{ value: email }];
-      // Toujours écraser SalonCoco-TypeCoupe et SalonCoco-Coiffeuse avec les nouvelles valeurs
-      updateFields.userDefined = [
-        { key: "SalonCoco-TypeCoupe", value: typeCoupe || "" },
-        { key: "SalonCoco-Coiffeuse", value: coiffeuse || "" },
-      ];
+    const existing = connections.find(p =>
+      (p.phoneNumbers || []).some(n => samePhone(n.value || "", phone))
+    );
+
+    if (existing) {
+      // Contact trouvé — mettre à jour sans créer de doublon
+      const resourceName   = existing.resourceName;
+      const etag           = existing.etag;
+      const existingEmail  = existing.emailAddresses?.[0]?.value || null;
+      const existingUD     = existing.userDefined || [];
+
+      const updateFields = {
+        // Toujours inclure phoneNumbers pour satisfaire l'etag
+        phoneNumbers: existing.phoneNumbers,
+        userDefined: [
+          { key: "SalonCoco-TypeCoupe", value: typeCoupe || "" },
+          { key: "SalonCoco-Coiffeuse", value: coiffeuse || "" },
+        ],
+      };
+      // Mettre à jour l'email seulement s'il change ou si on en a un nouveau
+      if (email && email !== existingEmail) {
+        updateFields.emailAddresses = [{ value: email }];
+      } else if (existingEmail) {
+        updateFields.emailAddresses = [{ value: existingEmail }];
+      }
+
       const updateMask = Object.keys(updateFields).join(",");
-      await fetch(`https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=${updateMask}`, {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify(updateFields),
-      });
-      console.log(`[GOOGLE] ✅ Contact mis à jour: ${existingPerson.names?.[0]?.displayName} — typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+      const patchR = await fetch(
+        `https://people.googleapis.com/v1/${resourceName}:updateContact?updatePersonFields=${updateMask}`,
+        {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ etag, ...updateFields }),
+        }
+      );
+      if (!patchR.ok) {
+        const pe = await patchR.json();
+        console.error(`[GOOGLE] ❌ Erreur mise à jour: ${patchR.status}`, JSON.stringify(pe));
+      } else {
+        console.log(`[GOOGLE] ✅ Contact mis à jour (pas de doublon): ${existing.names?.[0]?.displayName} — typeCoupe:${typeCoupe} coiffeuse:${coiffeuse}`);
+      }
       return;
     }
 
-    // Nouveau contact
+    // ── Aucun contact existant → créer ──────────────────────────────────────
     const r = await fetch("https://people.googleapis.com/v1/people:createContact", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -555,7 +577,7 @@ async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiff
       if (r.status === 403) console.error("[GOOGLE] ❌ Scope insuffisant — revisite /oauth/start");
       return;
     }
-    console.log(`[GOOGLE] ✅ Nouveau contact créé: ${name} (${email}) — ${phone}`);
+    console.log(`[GOOGLE] ✅ Nouveau contact créé: ${name} (${email || "sans email"}) — ${phone}`);
   } catch (e) {
     console.error("[GOOGLE] ❌ Erreur saveContact:", e.message);
   }
