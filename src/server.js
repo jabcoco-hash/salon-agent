@@ -1924,8 +1924,7 @@ app.get("/admin/salon", (req, res) => {
   .alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
   .alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
   .alert-info{background:#eff6ff;border:1.5px solid #93c5fd;color:#1e40af}
-  .token-row{display:flex;gap:8px;align-items:center;margin-bottom:22px}
-  .token-row input{flex:1}
+
   .spinner{display:none;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   .logo-preview{max-height:48px;max-width:160px;object-fit:contain;margin-top:8px;border-radius:6px;display:none}
@@ -1952,10 +1951,6 @@ app.get("/admin/salon", (req, res) => {
   <div id="alertErr" class="alert alert-err"></div>
   <div id="alertInfo" class="alert alert-info"></div>
 
-  <div class="token-row">
-    <input type="password" id="adminToken" placeholder="Token admin (ADMIN_TOKEN)" autocomplete="off">
-  </div>
-
   <form id="salonForm">
     ${fields}
     <img id="logoPreview" class="logo-preview" alt="Aperçu logo">
@@ -1967,7 +1962,21 @@ app.get("/admin/salon", (req, res) => {
     ${hasRailwayAPI ? `<button type="button" class="btn btn-save" id="btnSave" onclick="saveToRailway()">
       <span class="spinner" id="spinner"></span>💾 Sauvegarder & redéployer
     </button>` : ""}
-    <button type="button" class="btn" style="background:#475569" onclick="copyEnv()">📋 Copier pour Railway</button>
+  </div>
+</div>
+
+<!-- Modal token -->
+<div id="tokenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;display:none;align-items:center;justify-content:center">
+  <div style="background:#fff;border-radius:14px;padding:32px 28px;max-width:400px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.2)">
+    <h2 style="font-size:1.1rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">🔐 Token administrateur</h2>
+    <p style="font-size:.85rem;color:#6b7280;margin-bottom:18px">Entre ton ADMIN_TOKEN pour autoriser la sauvegarde.</p>
+    <input type="password" id="modalToken" placeholder="ADMIN_TOKEN" autocomplete="off"
+      style="width:100%;padding:11px 13px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.95rem;margin-bottom:14px;box-sizing:border-box"
+      onkeydown="if(event.key==='Enter')confirmSave()">
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button onclick="closeModal()" style="padding:9px 20px;border:1.5px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-size:.88rem">Annuler</button>
+      <button onclick="confirmSave()" style="padding:9px 22px;background:#059669;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:.88rem">Confirmer</button>
+    </div>
   </div>
 </div>
 
@@ -2005,13 +2014,34 @@ function showAlert(id, msg) {
   el.scrollIntoView({behavior:"smooth", block:"nearest"});
 }
 
-async function saveToRailway() {
-  const token = document.getElementById("adminToken").value.trim();
-  if (!token) { showAlert("alertErr", "⚠️ Entre le token admin pour sauvegarder."); return; }
+function saveToRailway() {
+  // Ouvrir le modal pour saisir le token
+  const modal = document.getElementById("tokenModal");
+  modal.style.display = "flex";
+  setTimeout(() => document.getElementById("modalToken").focus(), 50);
+}
+
+function closeModal() {
+  document.getElementById("tokenModal").style.display = "none";
+  document.getElementById("modalToken").value = "";
+}
+
+// Fermer le modal si on clique en dehors
+document.getElementById("tokenModal").addEventListener("click", function(e) {
+  if (e.target === this) closeModal();
+});
+
+async function confirmSave() {
+  const token = document.getElementById("modalToken").value.trim();
+  if (!token) { document.getElementById("modalToken").style.borderColor = "#dc2626"; return; }
+  closeModal();
+
   const btn = document.getElementById("btnSave");
   const spinner = document.getElementById("spinner");
-  btn.disabled = true; spinner.style.display = "inline-block";
+  btn.disabled = true;
+  spinner.style.display = "inline-block";
   showAlert("alertInfo", "⏳ Sauvegarde en cours...");
+
   try {
     const r = await fetch("/admin/salon/save?token=" + encodeURIComponent(token), {
       method: "POST",
@@ -2021,26 +2051,27 @@ async function saveToRailway() {
     let j;
     try { j = await r.json(); } catch(pe) { throw new Error("Réponse serveur invalide (status " + r.status + ")"); }
     if (!r.ok || !j.ok) throw new Error(j.error || "Erreur HTTP " + r.status);
-    const msg = j.redeployed
-      ? "✅ Sauvegardé! Redéploiement déclenché — changements actifs dans ~30 secondes."
-      : "✅ Variables sauvegardées. " + (j.warning ? "Note: " + j.warning : "Redéploiement non confirmé.");
-    showAlert("alertOk", msg);
+
+    if (j.redeployed) {
+      showAlert("alertOk", "✅ Sauvegardé avec succès! Le serveur redémarre — veuillez patienter et rafraîchir la page dans 1 minute.");
+      // Compte à rebours visible
+      let sec = 60;
+      const el = document.getElementById("alertOk");
+      const interval = setInterval(() => {
+        sec--;
+        el.textContent = "✅ Sauvegardé! Redémarrage en cours — rafraîchir dans " + sec + "s...";
+        if (sec <= 0) { clearInterval(interval); el.textContent = "✅ Prêt — tu peux rafraîchir la page."; }
+      }, 1000);
+    } else {
+      showAlert("alertOk", "✅ Variables sauvegardées. " + (j.warning ? "Note: " + j.warning : ""));
+    }
   } catch(e) {
     showAlert("alertErr", "❌ " + e.message);
     console.error("Save error:", e);
   } finally {
-    btn.disabled = false; spinner.style.display = "none";
+    btn.disabled = false;
+    spinner.style.display = "none";
   }
-}
-
-function copyEnv() {
-  const lines = KEYS.map(k => {
-    const el = document.getElementById(k);
-    return k + "=" + (el ? el.value.replace(/\n/g,"\\n") : "");
-  });
-  navigator.clipboard.writeText(lines.join("\n")).then(() => {
-    showAlert("alertOk", "✅ Copié dans le presse-papier ! Colle ça dans Railway → Variables.");
-  });
 }
 </script>
 </body>
