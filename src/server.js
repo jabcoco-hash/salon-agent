@@ -1634,7 +1634,7 @@ app.get("/dashboard", (req, res) => {
     return s < 60 ? `${s}s` : `${Math.floor(s/60)}m${s%60}s`;
   };
 
-  const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🗣️", helene:"🤖" }[t] || "•");
+  const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🙋", helene:"🤖" }[t] || "•");
 
   // Agréger domaines et questions non répondues de tous les appels
   const allDomains = [...new Set(logs.flatMap(l => l.domains || []))];
@@ -1760,8 +1760,9 @@ app.get("/dashboard", (req, res) => {
   .event-warn .emsg{color:#b45309}
   .event-error .emsg{color:#dc2626}
   .event-booking .emsg{color:#059669;font-weight:600}
-  .event-client .emsg{color:#2563eb}
-  .event-helene .emsg{color:#6c47ff}
+  .event-client{padding-left:22px;border-left:2px solid #bfdbfe;margin-left:8px}
+  .event-client .emsg{color:#2563eb;font-style:italic}
+  .event-helene .emsg{color:#6c47ff;font-weight:500}
 
   /* Résumés intérieurs */
   .resume{padding:10px 14px;background:#fafafa;border-top:1px solid #f3f4f6}
@@ -2327,7 +2328,7 @@ function renderFaq() {
   const count = document.getElementById("faqCount");
   count.textContent = faqData.length + " question" + (faqData.length !== 1 ? "s" : "") + " dans la FAQ d'Hélène";
   if (!faqData.length) {
-    list.innerHTML = '<div class="empty">Aucune question pour l'instant — ajoutez-en une ci-dessus.</div>';
+    list.innerHTML = "<div class=\"empty\">Aucune question pour l&apos;instant — ajoutez-en une ci-dessus.</div>";
     return;
   }
   list.innerHTML = faqData.map((f, i) => \`
