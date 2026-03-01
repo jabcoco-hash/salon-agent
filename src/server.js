@@ -2333,25 +2333,26 @@ function renderFaq() {
   var html = "";
   for (var i = 0; i < faqData.length; i++) {
     var f = faqData[i];
-    html += '<div class="card" id="card-' + f.id + '">';
-    html += '<div class="card-head" onclick="toggle(\'' + f.id + '\')">';
-    html += '<span class="badge-num">' + (i+1) + '</span>';
-    html += '<span class="q-text">' + esc(f.question) + '</span>';
-    html += '<span class="chevron" id="chev-' + f.id + '">&#9660;</span>';
-    html += '</div>';
-    html += '<div class="card-body" id="body-' + f.id + '">';
-    html += '<p class="r-text" id="r-' + f.id + '">' + esc(f.reponse) + '</p>';
-    html += '<div class="edit-form" id="edit-' + f.id + '">';
-    html += '<input type="text" id="eq-' + f.id + '" value="' + esc(f.question) + '">';
-    html += '<textarea id="er-' + f.id + '">' + esc(f.reponse) + '</textarea>';
-    html += '<div style="display:flex;gap:8px">';
-    html += '<button class="btn btn-add" style="font-size:.8rem;padding:6px 14px" onclick="saveEdit(\'' + f.id + '\')">Sauvegarder</button>';
-    html += '<button class="btn" style="background:#f3f4f6;color:#374151;font-size:.8rem;padding:6px 12px" onclick="cancelEdit(\'' + f.id + '\')">Annuler</button>';
-    html += '</div></div>';
-    html += '<div class="actions" id="acts-' + f.id + '">';
-    html += '<button class="btn btn-edit" onclick="startEdit(\'' + f.id + '\')">Modifier</button>';
-    html += '<button class="btn btn-del" onclick="deleteFaq(\'' + f.id + '\')">Supprimer</button>';
-    html += '</div></div></div>';
+    var id = f.id;
+    html += "<div class=\"card\" id=\"card-" + id + "\" data-id=\"" + id + "\">";
+    html += "<div class=\"card-head\" data-action=\"toggle\" data-id=\"" + id + "\">";
+    html += "<span class=\"badge-num\">" + (i+1) + "</span>";
+    html += "<span class=\"q-text\">" + esc(f.question) + "</span>";
+    html += "<span class=\"chevron\" id=\"chev-" + id + "\">&#9660;</span>";
+    html += "</div>";
+    html += "<div class=\"card-body\" id=\"body-" + id + "\">";
+    html += "<p class=\"r-text\" id=\"r-" + id + "\">" + esc(f.reponse) + "</p>";
+    html += "<div class=\"edit-form\" id=\"edit-" + id + "\">";
+    html += "<input type=\"text\" id=\"eq-" + id + "\" value=\"" + esc(f.question) + "\">";
+    html += "<textarea id=\"er-" + id + "\">" + esc(f.reponse) + "</textarea>";
+    html += "<div style=\"display:flex;gap:8px\">";
+    html += "<button class=\"btn btn-add\" style=\"font-size:.8rem;padding:6px 14px\" data-action=\"save\" data-id=\"" + id + "\">Sauvegarder</button>";
+    html += "<button class=\"btn\" style=\"background:#f3f4f6;color:#374151;font-size:.8rem;padding:6px 12px\" data-action=\"cancel\" data-id=\"" + id + "\">Annuler</button>";
+    html += "</div></div>";
+    html += "<div class=\"actions\" id=\"acts-" + id + "\">";
+    html += "<button class=\"btn btn-edit\" data-action=\"edit\" data-id=\"" + id + "\">Modifier</button>";
+    html += "<button class=\"btn btn-del\" data-action=\"delete\" data-id=\"" + id + "\">Supprimer</button>";
+    html += "</div></div></div>";
   }
   list.innerHTML = html;
 }
@@ -2430,6 +2431,19 @@ function deleteFaq(id) {
     showOk("Question supprimee.");
   }).catch(function(e){ showErr("Erreur: " + e.message); });
 }
+
+// Délégation d'événements — évite tous les problèmes de quotes dans onclick
+document.addEventListener("click", function(e) {
+  var el = e.target.closest("[data-action]");
+  if (!el) return;
+  var action = el.getAttribute("data-action");
+  var id = el.getAttribute("data-id");
+  if (action === "toggle") toggle(id);
+  else if (action === "edit") startEdit(id);
+  else if (action === "cancel") cancelEdit(id);
+  else if (action === "save") saveEdit(id);
+  else if (action === "delete") deleteFaq(id);
+});
 
 loadFaq();
 </script>
