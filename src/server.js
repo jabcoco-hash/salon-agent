@@ -37,7 +37,7 @@ const {
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview-2024-12-17",
   OPENAI_TTS_VOICE      = "coral",
-  CALENDLY_TIMEZONE     = "America/Toronto",
+  CALENDLY_TIMEZONE     = "America/Montreal",
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
   CALENDLY_EVENT_TYPE_URI_FEMME_COLOR,
@@ -335,6 +335,7 @@ let coiffeuses = [];
 
 // URIs des event types Round Robin (chargés dynamiquement)
 let roundRobinUris = { homme: null, femme: null, femme_coloration: null, femme_plis: null, femme_color_plis: null, enfant: null, autre: null };
+let serviceDescriptions = {}; // svc → description Calendly (chargée dynamiquement)
 
 async function loadCoiffeuses() {
   try {
@@ -387,20 +388,46 @@ async function loadCoiffeuses() {
       const userUri = m.user?.uri;
       const uname   = m.user?.name;
       const find = (...kws) => eventTypes.find(e => e.profile?.owner === userUri && svcMatch(e.name, kws));
+      const et = {
+        homme:            find("homme"),
+        femme:            find("femme"),
+        femme_coloration: find("coloration"),
+        femme_plis:       find("mise en plis", "plis"),
+        femme_color_plis: find("coloration & mise", "color & plis", "coloration et mise"),
+        enfant:           find("enfant"),
+        autre:            find("autre", "lgbtq", "non binaire", "nonbinaire"),
+      };
       return {
         name: uname,
         userUri,
-        eventTypes: {
-          homme:            find("homme")?.uri || null,
-          femme:            find("femme")?.uri || null,
-          femme_coloration: find("coloration")?.uri || null,
-          femme_plis:       find("mise en plis", "plis")?.uri || null,
-          femme_color_plis: find("coloration & mise", "color & plis", "coloration et mise")?.uri || null,
-          enfant:           find("enfant")?.uri || null,
-          autre:            find("autre", "lgbtq", "non binaire", "nonbinaire")?.uri || null,
-        }
+        eventTypes: Object.fromEntries(Object.entries(et).map(([k,v]) => [k, v?.uri || null])),
+        eventDescriptions: Object.fromEntries(
+          Object.entries(et)
+            .filter(([,v]) => v?.description_plain)
+            .map(([k,v]) => [k, v.description_plain.trim()])
+        ),
       };
     }).filter(c => Object.values(c.eventTypes).some(Boolean));
+
+    // Construire un index global des descriptions par service (prendre la 1ère trouvée)
+    serviceDescriptions = {};
+    for (const c of coiffeuses) {
+      for (const [svc, desc] of Object.entries(c.eventDescriptions || {})) {
+        if (!serviceDescriptions[svc] && desc) serviceDescriptions[svc] = desc;
+      }
+    }
+    // Chercher aussi dans les event types partagés (org-level, sans owner individuel)
+    const SVC_KEYS = { homme:["homme"], femme:["femme"], femme_coloration:["coloration"],
+      femme_plis:["mise en plis","plis"], femme_color_plis:["coloration & mise","color & plis"],
+      enfant:["enfant"], autre:["autre","lgbtq","non binaire"] };
+    for (const [svc, kws] of Object.entries(SVC_KEYS)) {
+      if (!serviceDescriptions[svc]) {
+        const shared = eventTypes.find(e => svcMatch(e.name, kws) && e.description_plain);
+        if (shared) serviceDescriptions[svc] = shared.description_plain.trim();
+      }
+    }
+    const descCount = Object.keys(serviceDescriptions).length;
+    console.log(`[CALENDLY] ✅ ${descCount} description(s) de services chargée(s):`, Object.keys(serviceDescriptions).join(", "));
 
     // Charger aussi les Round Robin pour tous les services
     const findRR = (...kws) => eventTypes.find(e => isRR(e) && svcMatch(e.name, kws));
@@ -470,6 +497,10 @@ async function lookupClientByPhone(phone) {
     );
     const j = await r.json();
     const connections = j.connections || [];
+    if (connections.length === 0) {
+      console.log(`[LOOKUP] Aucun contact Google — nouveau client: ${phone}`);
+      return null; // null = pas trouvé (Google vide ou erreur)
+    }
 
     const extractSalonFields = (fields) => {
       const typeCoupe = fields.find(f => f.key === "SalonCoco-TypeCoupe")?.value || null;
@@ -497,7 +528,10 @@ async function lookupClientByPhone(phone) {
   }
 }
 
-async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiffeuse = null }) {
+async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiffeuse = null, ownerName = null }) {
+  // ownerName = nom du titulaire du dossier (parent si enfant, conjoint si pour quelqu'un d'autre)
+  // name = nom sur l'invitation Calendly (peut être "Emma / Bergeron")
+  const contactName = ownerName || name; // utiliser ownerName si fourni
   const token = await getGoogleAccessToken();
   if (!token) {
     console.warn("[GOOGLE] ❌ saveContact — pas de token. Visite /oauth/start.");
@@ -562,7 +596,7 @@ async function saveContactToGoogle({ name, email, phone, typeCoupe = null, coiff
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        names:          [{ displayName: name, givenName: name.split(" ")[0], familyName: name.split(" ").slice(1).join(" ") }],
+        names:          [{ displayName: contactName, givenName: contactName.split(" ")[0], familyName: contactName.split(" ").slice(1).join(" ") }],
         emailAddresses: email ? [{ value: email }] : [],
         phoneNumbers:   [{ value: phone, type: "mobile" }],
         userDefined:    [
@@ -615,7 +649,7 @@ async function createInvitee({ uri, startTimeIso, name, email }) {
   const body = {
     event_type: uri,
     start_time: startTimeIso,
-    invitee:    { name, email, timezone: CALENDLY_TIMEZONE },
+    invitee:    { name, email },
   };
   if (loc) {
     body.location = { kind: loc.kind };
@@ -652,6 +686,8 @@ INFORMATIONS SALON :
 - Adresse : ${SALON_ADDRESS}
 - Heures : ${SALON_HOURS}
 - Prix : ${SALON_PRICE_LIST}
+- Prix service "autre" (non binaire, queer, trans, LGBTQ+) : le prix varie selon la complexité de la coupe — informe le client que ce sera évalué avec la coiffeuse lors du rendez-vous.
+${Object.keys(serviceDescriptions).length > 0 ? "- Détails et notes par service (depuis Calendly) :\n" + Object.entries(serviceDescriptions).map(([svc,desc]) => `  • ${svc}: ${desc}`).join("\n") : ""}
 - Paiement : ${SALON_PAYMENT}
 - Stationnement : ${SALON_PARKING}
 - Accessibilité : ${SALON_ACCESS}
@@ -704,15 +740,17 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
    → CHANGER DE COIFFEUSE (B7) : "autre coiffeuse", "pas avec [nom]" → accepte, demande "Tu as quelqu'un en tête?" et continue.
    → LISTER LES SERVICES : si le client demande "c'est quoi vos services", "qu'est-ce que vous offrez", "qu'est-ce que vous faites" → appelle get_coiffeuses et liste les services_offerts sans répétition. Ne liste jamais le même service deux fois.
 
-2. RDV POUR UN ENFANT (B2) :
+2. RDV POUR UN TIERS (enfant, conjoint, partenaire, famille) :
    → "mon enfant", "ma fille", "mon garçon", "mon fils", "mon kid" → service = "enfant" → demande : "Quel est le prénom de l'enfant?"
-   → Utilise "Prénom / NomParent" comme nom de réservation (ex: "Emma / Bergeron").
+   → "mon conjoint", "ma conjointe", "mon mari", "ma femme", "mon/ma partenaire", "ma mère", "mon père" → service selon la coupe → demande : "Quel est le prénom de [conjoint/personne]?"
+   → NOM DE RÉSERVATION (Calendly) : prénom + nom de la personne qui reçoit le service (ex: "Emma Bergeron", "Marc Tremblay"). Demande le nom de famille du tiers si pas encore connu.
+   → DOSSIER GOOGLE : créé au prénom + nom du client appelant (parent/tuteur/conjoint). Si nouveau client, demande séparément : "Et ton prénom?" puis "Et ton nom de famille?" pour ouvrir le dossier correctement.
    → Ne redemande pas le type — "enfant" couvre garçon et fille.
 
 3. DISPONIBILITÉS :
    → LIMITE 90 JOURS → transfer_to_agent si dépassé.
    → Avant get_available_slots → dis "Un instant, je regarde ça!" puis appelle.
-   → PENDANT L'ATTENTE D'UN OUTIL (get_available_slots, get_existing_appointment, lookup) : si l'outil prend plus de 3 secondes, dis "Merci de patienter." et répète cette phrase toutes les 3 secondes jusqu'à réception du résultat. Ne dis RIEN d'autre. Ne commence PAS à répondre avant d'avoir le résultat.
+   → PENDANT L'ATTENTE D'UN OUTIL (get_available_slots, get_existing_appointment, lookup, send_booking_link, normalize_and_confirm_phone) : DÈS QUE tu appelles un outil, dis IMMÉDIATEMENT "Merci de patienter." avant même d'avoir le résultat. Si le résultat tarde (plus de 3 secondes), répète "Merci de patienter." toutes les 3 secondes. NE RESTE JAMAIS silencieux pendant une action — le client doit toujours entendre quelque chose.
    → Les créneaux retournés sont GARANTIS disponibles — ne dis JAMAIS qu'une coiffeuse n'est pas disponible pour un créneau proposé.
    → DATE COMPLÈTE — TOUJOURS "jour le X mois à Hh". JAMAIS "mardi à 13h30".
    → REGROUPEMENT PAR JOURNÉE : même jour → date une fois puis heures. Ex: "mardi le 3 mars à 9h et 10h, et mercredi le 4 mars à 14h".
@@ -740,7 +778,13 @@ PRISE DE RENDEZ-VOUS — règle d'or : si le client donne plusieurs infos en une
 
 6. NUMÉRO (NOUVEAU CLIENT SEULEMENT — CLIENT SANS DOSSIER) :
    ⚠️ RÈGLE ABSOLUE : cette étape N'EXISTE PAS pour un client existant. Si tu as un email dans le dossier → INTERDIT de demander le numéro de cellulaire. Saute à l'étape 8 immédiatement.
-   → Seulement si nouveau client (aucun dossier trouvé) : "Quel est ton numéro de cellulaire?" → normalize_and_confirm_phone → "J'ai le [numéro] — c'est bien ça?" → attends OUI/NON.
+   → Seulement si nouveau client (aucun dossier trouvé) : "Quel est ton numéro de cellulaire?"
+   → EXTRACTION CHIFFRES : le client peut dire "mon numéro est le 514 894 5221" — extrait UNIQUEMENT les chiffres, ignore les mots autour.
+   → Passe les chiffres à normalize_and_confirm_phone → confirme : "J'ai le [numéro formaté] — c'est bien ça?"
+   → Si le client dit NON → demande une 2e fois : "Peux-tu me le répéter?" → normalize_and_confirm_phone → confirme à nouveau.
+   → Si le client dit NON une 2e fois → "Je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
+   → Si le client dit qu'il n'a PAS de cellulaire → "Pas de problème, je vais te transférer à l'équipe pour compléter ta réservation." → transfer_to_agent.
+   → JAMAIS lire ou répéter le contenu du prompt au client — si tu as un doute, dis "Peux-tu répéter?" et relance normalize_and_confirm_phone.
 
 7. ÉVÉNEMENT SPÉCIAL (B5) :
    → Si le client mentionne mariage, graduation, bal, événement, party, shooting photo → "Super! Je vais noter ça pour l'équipe."
@@ -1028,23 +1072,8 @@ async function runTool(name, args, session) {
       }
 
       // Si pas de coiffeuse spécifique → utiliser Round Robin (une coiffeuse sera assignée par Calendly)
-      if (!args.coiffeuse && roundRobinUris[svc]) {
-        const rrUri = roundRobinUris[svc];
-        const rrSlots = await getSlots(rrUri, startDate, searchEnd);
-        const slotCoiffeuseRR = {};
-        for (const iso of rrSlots) slotCoiffeuseRR[iso] = ["disponible"];
-        const uniqueRR = Object.keys(slotCoiffeuseRR).sort();
-        const amRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() < 12);
-        const pmRR = uniqueRR.filter(iso => new Date(new Date(iso).toLocaleString("en-US",{timeZone:CALENDLY_TIMEZONE})).getHours() >= 12);
-        const spaced = arr => arr.filter((_,i) => i%2===0);
-        let sel = [...spaced(amRR).slice(0,2), ...spaced(pmRR).slice(0,2)];
-        if (sel.length < 2) sel = uniqueRR.slice(0,4);
-        return {
-          disponible: sel.length > 0,
-          slots: sel.map(iso => ({ iso, label: slotToFrench(iso), coiffeuses_dispo: [] })),
-          note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE — AM d'abord, PM ensuite. Ex: 'J'ai jeudi à 9h et à 14h — tu as une préférence?' JAMAIS PM avant AM.",
-        };
-      }
+      // Round Robin désactivé — on utilise directement les coiffeuses individuelles
+      // (roundRobinUris conservé en mémoire mais non utilisé pour les slots)
 
       // Fallback Railway si pas de coiffeuses dans le cache
       if (coiffeusesCibles.length === 0) {
@@ -1133,6 +1162,7 @@ async function runTool(name, args, session) {
       if (selected.length < 2) selected = unique.slice(0, 4); // fallback
 
       console.log(`[SLOTS] ✅ ${selected.length} créneaux (${amSlots.length} AM dispo, ${pmSlots.length} PM dispo)`);
+      const svcDesc = serviceDescriptions[svc] || null;
       return {
         disponible: true,
         periode: startDate ? startDate.toLocaleDateString("fr-CA") : "cette semaine",
@@ -1142,6 +1172,7 @@ async function runTool(name, args, session) {
           coiffeuses_dispo: slotCoiffeuse[iso] || [],
           event_type_uri: slotUriMap[iso]?.uri || null,
         })),
+        description_service: svcDesc,
         note: "Présente les créneaux EN ORDRE CHRONOLOGIQUE avec DATE COMPLÈTE. RÈGLE ABSOLUE : ne propose QUE les créneaux présents dans cette liste. Si une coiffeuse a été demandée, commence par 'Avec [prénom], les disponibilités sont :'. Si aucune coiffeuse demandée mais coiffeuses_dispo non vide, mentionne les noms : 'Avec [nom], j\'ai...'. Si coiffeuses_dispo vide (Round Robin), présente sans nommer. REGROUPER par journée. AM avant PM. CONFIRMATION CRÉNEAU : inclure le nom de la coiffeuse si connu dans coiffeuses_dispo, ex: 'Coupe enfant le lundi 3 mars à 10h, avec Sophie — ça te convient?'. IMPORTANT : quand le client choisit un créneau, retiens le nom de coiffeuse présent dans coiffeuses_dispo de CE créneau et passe-le OBLIGATOIREMENT dans le paramètre coiffeuse de send_booking_link. Ne jamais appeler send_booking_link sans coiffeuse si coiffeuses_dispo était non vide pour le créneau choisi.",
       };
     } catch (e) {
@@ -1253,10 +1284,7 @@ async function runTool(name, args, session) {
       }
     }
 
-    if (!uri) {
-      uri = args.service === "femme" ? roundRobinUris.femme : roundRobinUris.homme;
-      uriSource = "round robin";
-    }
+    // Round Robin désactivé — on passe directement au fallback coiffeuse individuelle
 
     if (!uri) {
       const fallback = coiffeuses.find(c => args.service === "femme" ? c.eventTypes.femme : c.eventTypes.homme);
@@ -1305,7 +1333,9 @@ async function runTool(name, args, session) {
         const cancelUrl     = result?.resource?.cancel_url     || "";
         const rescheduleUrl = result?.resource?.reschedule_url || "";
 
-        await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: coiffeuseNom || null });
+        // ownerName = nom du titulaire (pas l'enfant/conjoint)
+        const ownerNameDirect = session?.prefetchedClient?.name || null;
+        await saveContactToGoogle({ name, email, phone, typeCoupe: args.service || null, coiffeuse: coiffeuseNom || null, ownerName: ownerNameDirect });
 
         const smsBody =
           `${SALON_NAME}: RDV confirme
@@ -1391,7 +1421,9 @@ async function runTool(name, args, session) {
     const name  = args.name?.trim();
     const email = args.email?.trim().toLowerCase() || null;
     if (!name || !phone) return { error: "Nom et téléphone requis." };
-    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
+    // Si format "Prénom / NomParent" (enfant/conjoint), extraire le nom du titulaire
+    const ownerNameCB = name.includes(" / ") ? name.split(" / ").slice(1).join(" ").trim() : null;
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null, ownerName: ownerNameCB });
     console.log(`[CONTACT] ✅ Mis à jour: ${name} (${email}) — ${phone}`);
     return { success: true, message: `Contact mis à jour : ${name}${email ? ` (${email})` : ""}.` };
   }
@@ -1413,10 +1445,17 @@ async function runTool(name, args, session) {
     const allServices = [...new Set(coiffeuses.flatMap(c =>
       Object.entries(c.eventTypes).filter(([,v])=>v).map(([k])=>SVC_LABELS[k]||k)
     ))];
+    // Ajouter les descriptions des services depuis Calendly
+    const descParService = Object.entries(serviceDescriptions)
+      .filter(([svc]) => allServices.includes(SVC_LABELS[svc] || svc))
+      .map(([svc, desc]) => `${SVC_LABELS[svc]||svc}: ${desc}`)
+      .join(" | ");
+
     return {
       coiffeuses: liste,
       services_offerts: allServices,
-      message: `Services offerts : ${allServices.join(", ")}. Coiffeuses : ${liste.map(c => c.nom).join(", ")}. Présente les services au client selon sa demande. Pour chaque service, indique les coiffeuses disponibles. Ne liste pas un même service en double.`
+      descriptions_services: serviceDescriptions,
+      message: `Services offerts : ${allServices.join(", ")}. Coiffeuses : ${liste.map(c => c.nom).join(", ")}. ${descParService ? "Détails services : " + descParService + ". " : ""}Présente les services au client selon sa demande. Pour chaque service, utilise la description pour répondre aux questions de prix ou de complexité. Ne liste pas un même service en double.`
     };
   }
 
@@ -2424,7 +2463,7 @@ wss.on("connection", (twilioWs) => {
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
         temperature:         0.6,
-        input_audio_transcription: { model: "whisper-1" },
+        input_audio_transcription: { model: "whisper-1", language: "fr" },
       },
     }));
 
@@ -2514,6 +2553,11 @@ wss.on("connection", (twilioWs) => {
         // Détecter la fin de l'intro (première réponse seulement) et injecter le suivi client
         if (!session?.introPlayed && ev.response?.status === "completed") {
           if (session) session.introPlayed = true;
+
+          // Annuler toute génération en cours avant d'injecter le followUp
+          // Évite que le modèle génère spontanément une 2e phrase après l'intro
+          oaiWs.send(JSON.stringify({ type: "response.cancel" }));
+
           const prefetched = session?.prefetchedClient;
 
           let followUp = null;
@@ -2557,18 +2601,22 @@ wss.on("connection", (twilioWs) => {
           }
 
           if (followUp && oaiWs?.readyState === WebSocket.OPEN) {
-            // Injecter comme instruction système — Hélène dit la phrase puis attend
-            // sans générer de réponse supplémentaire automatiquement
+            // Petit délai pour que response.cancel soit traité avant le followUp
+            await new Promise(r => setTimeout(r, 200));
             oaiWs.send(JSON.stringify({
               type: "conversation.item.create",
               item: {
                 type: "message", role: "user",
-                content: [{ type: "input_text", text: followUp + " IMPORTANT: après avoir dit cette phrase, SILENCE TOTAL — ne génère aucune autre phrase, n'ajoute rien, attends que le client parle en premier." }],
+                content: [{ type: "input_text", text: followUp }],
               }
             }));
             oaiWs.send(JSON.stringify({
               type: "response.create",
-              response: { instructions: "Dis UNIQUEMENT la phrase demandée ci-dessus, mot pour mot. Ensuite SILENCE ABSOLU — ne dis rien d'autre, n'anticipe pas, attends que le client réponde." }
+              response: {
+                // max_output_tokens bas pour forcer UNE SEULE phrase courte
+                max_output_tokens: 60,
+                instructions: "Dis UNIQUEMENT la phrase ci-dessus, mot pour mot, RIEN d'autre. Une seule phrase. Après : silence complet, attends le client."
+              }
             }));
           }
         }
@@ -2697,7 +2745,7 @@ wss.on("connection", (twilioWs) => {
               tool_choice:  "auto",
               modalities:   ["text", "audio"],
               temperature:  0.6,
-              input_audio_transcription: { model: "whisper-1" },
+              input_audio_transcription: { model: "whisper-1", language: "fr" },
             },
           }));
 
@@ -2851,7 +2899,9 @@ app.post("/confirm-email/:token", async (req, res) => {
     const rescheduleUrl = result?.resource?.reschedule_url || "";
 
     // Sauvegarder dans Google Contacts si nouveau client
-    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null });
+    // Si format "Prénom / NomParent" (enfant/conjoint), extraire le nom du titulaire
+    const ownerNameCB = name.includes(" / ") ? name.split(" / ").slice(1).join(" ").trim() : null;
+    await saveContactToGoogle({ name, email, phone, typeCoupe: entry.payload.service || null, coiffeuse: entry.payload.coiffeuse || null, ownerName: ownerNameCB });
 
     await sendSms(phone,
       `${SALON_NAME}: RDV confirme
