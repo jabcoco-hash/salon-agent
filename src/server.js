@@ -62,6 +62,7 @@ function envStr(key, fallback = "") {
   return v.trim().replace(/^["']|["']$/g, "");
 }
 
+const AGENT_NAME        = envStr("AGENT_NAME",        "Hélène");
 const SALON_NAME        = envStr("SALON_NAME",        "Salon Coco");
 const SALON_CITY        = envStr("SALON_CITY",        "Magog Beach");
 const SALON_ADDRESS     = envStr("SALON_ADDRESS",     "Adresse non configurée");
@@ -706,7 +707,7 @@ function slotToShort(iso) {
 // ─── System prompt ────────────────────────────────────────────────────────────
 function systemPrompt(callerNumber) {
   const callerDisplay = callerNumber ? fmtPhone(callerNumber) : null;
-  return `Tu es Hélène, réceptionniste au ${SALON_NAME} à ${SALON_CITY}.
+  return `Tu es ${AGENT_NAME}, réceptionniste au ${SALON_NAME} à ${SALON_CITY}.
 Tu parles en français québécois naturel. Ton ton est chaleureux, humain, jamais robotique.
 
 INFORMATIONS SALON :
@@ -845,7 +846,8 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
    ⚠️ INTERDIT si client existant.
    → Extrait uniquement les chiffres, ignore les mots autour.
    → DÈS que le client donne des chiffres → normalize_and_confirm_phone IMMÉDIATEMENT.
-   → Répète chiffre PAR chiffre en 3 groupes : "[g1], [g2], [g3] — c'est bien ça?"
+   → Le résultat te donne EXACTEMENT quoi dire — dis-le mot pour mot à voix haute.
+   → Après OUI du client : dis "Super!" puis passe à l'étape 8 IMMÉDIATEMENT.
    → NON → "Peux-tu me le répéter?" → 2e tentative.
    → NON 2e fois → transfer_to_agent.
    → Pas de cellulaire → transfer_to_agent.
@@ -1325,7 +1327,7 @@ async function runTool(name, args, session) {
       phone,
       formatted: fmtPhone(phone),
       spoken_groups: g1 + " " + g2 + " " + g3,
-      message: `Numéro reçu. Dis IMMÉDIATEMENT : "Super! J'ai bien noté. Pour confirmer, c'est bien le ${g1}, ${g2}, ${g3}?" — chiffre par chiffre, courte pause entre chaque groupe. Attends OUI ou NON.`,
+      message: `Numéro reçu. Tu DOIS parler maintenant. Dis EXACTEMENT et IMMÉDIATEMENT à voix haute : "Super! Pour confirmer, c'est bien le ${g1}... ${g2}... ${g3}?" — prononce chaque groupe séparément avec une courte pause. Ne fais RIEN d'autre avant d'avoir dit cette phrase. Attends OUI ou NON du client.`,
     };
   }
 
@@ -1352,8 +1354,7 @@ async function runTool(name, args, session) {
     if (!phone) { console.error("[BOOKING] ❌ Numéro invalide"); return { error: "Numéro invalide." }; }
     // Confirmer le type client si pas encore déterminé
     if (cl && !cl.clientType) cl.clientType = args.email ? "existant" : "nouveau";
-    // Mettre à jour le log avec la coiffeuse résolue (même si Round Robin)
-    if (cl && coiffeuseNom) cl.coiffeuse = coiffeuseNom;
+    // coiffeuseNom sera résolu plus bas après la déclaration
     // Charger les coiffeuses si pas encore fait
     if (coiffeuses.length === 0) await loadCoiffeuses();
 
@@ -1408,6 +1409,9 @@ async function runTool(name, args, session) {
       coiffeuseNom = cl.coiffeuse;
       console.log(`[BOOKING] Coiffeuse depuis session: ${coiffeuseNom}`);
     }
+
+    // Maintenant coiffeuseNom est résolu — mettre à jour le log
+    if (cl && coiffeuseNom) cl.coiffeuse = coiffeuseNom;
 
     // ── Si email déjà connu → créer le RDV Calendly directement ─────────────
     if (args.email?.trim()) {
@@ -1488,7 +1492,7 @@ async function runTool(name, args, session) {
         }
       }, 14000); // phrase nouveau client plus longue — 14s
       return { success: true, phone_display: fmtPhone(phone),
-        message: `SMS envoyé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} Dis EXACTEMENT ces deux phrases dans cet ordre : "Laisse-moi ajouter ça au calendrier de ${coiffeuseNom || "ta coiffeuse"}." puis "Je t'envoie un texto pour confirmer ton courriel. Une fois fait, tu recevras la confirmation. Bonne journée!" Puis STOP absolu — zéro mot de plus, l'appel se ferme.` };
+        message: `SMS envoyé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} TU DOIS PARLER MAINTENANT — dis immédiatement et sans pause : "Je t'envoie un texto pour confirmer ton courriel. Une fois confirmé, tu recevras ta confirmation de réservation. Bonne journée!" — puis SILENCE ABSOLU. L'appel se ferme automatiquement dans quelques secondes.` };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -2029,6 +2033,7 @@ app.get("/admin/faq/page", (req, res) => res.redirect("/admin/config?tab=faq"));
 app.get("/admin/config", (req, res) => {
   const activeTab = req.query.tab === "faq" ? "faq" : "salon";
   const SALON_VARS = [
+    { key: "AGENT_NAME",       label: "Nom de l'agent vocal",  val: AGENT_NAME,       multi: false },
     { key: "SALON_NAME",       label: "Nom du salon",          val: SALON_NAME,       multi: false },
     { key: "SALON_CITY",       label: "Ville",                 val: SALON_CITY,       multi: false },
     { key: "SALON_ADDRESS",    label: "Adresse",               val: SALON_ADDRESS,    multi: false },
@@ -2043,7 +2048,7 @@ app.get("/admin/config", (req, res) => {
 
   const salonFields = SALON_VARS.map(v => {
     const safe = (v.val || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-    if (v.multi) return "<div class=\"field\"><label>"+v.label+" <span class=\"badge-multi\">multiligne</span></label><textarea id=\""+v.key+"\" name=\""+v.key+"\" rows=\"3\">"+safe+"</textarea></div>";
+    if (v.multi) return "<div class=\"field\"><label>"+v.label+" <span class=\"badge-multi\">multiligne</span></label><textarea id=\""+v.key+"\" name=\""+v.key+"\" rows=\"10\">"+safe+"</textarea></div>";
     return "<div class=\"field\"><label>"+v.label+"</label><input type=\"text\" id=\""+v.key+"\" name=\""+v.key+"\" value=\""+safe+"\"></div>";
   }).join("");
 
@@ -2124,7 +2129,7 @@ hr{border:none;border-top:1.5px solid #f3f4f6;margin:20px 0}
   <h1>⚙️ Configuration</h1>
   <div class="tabs">
     <button class="tab ${activeTab==="salon"?"active":""}" onclick="switchTab('salon')">🏢 Entreprise</button>
-    <button class="tab ${activeTab==="faq"?"active":""}" onclick="switchTab('faq')">❓ FAQ Hélène</button>
+    <button class="tab ${activeTab==="faq"?"active":""}" onclick="switchTab('faq')">❓ FAQ</button>
   </div>
 
   <!-- Onglet Entreprise -->
@@ -2261,8 +2266,16 @@ function renderFaq(){
 }
 
 async function loadFaq(){
-  try{var r=await fetch("/admin/faq");var j=await r.json();faqData=j.items||[];renderFaq();}
-  catch(e){document.getElementById("faqList").innerHTML="<p class='empty-faq'>Erreur chargement FAQ.</p>";}
+  try{
+    var r=await fetch("/admin/faq");
+    if(!r.ok){throw new Error("HTTP "+r.status+" — "+r.statusText);}
+    var j=await r.json();
+    faqData=j.items||[];
+    renderFaq();
+  }catch(e){
+    document.getElementById("faqList").innerHTML="<p class='empty-faq'>Erreur chargement FAQ : "+e.message+". Réessayez en rafraîchissant la page.</p>";
+    console.error("FAQ load error:",e);
+  }
 }
 loadFaq();
 
@@ -2315,6 +2328,53 @@ async function deleteFaq(id){
 
 
 
+
+// ─── Routes FAQ (CRUD) ───────────────────────────────────────────────────────
+const checkAdminToken = (req, res) => {
+  const token = req.headers["x-admin-token"] || req.query.token;
+  if (!token || token !== (process.env.ADMIN_TOKEN || "")) {
+    res.status(401).json({ error: "Non autorisé" });
+    return false;
+  }
+  return true;
+};
+
+app.get("/admin/faq", (req, res) => {
+  res.json({ ok: true, items: faqItems });
+});
+
+app.post("/admin/faq", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const { question, reponse } = req.body;
+  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
+  const item = { id: Date.now().toString(), question: question.trim(), reponse: reponse.trim(), createdAt: new Date().toISOString() };
+  faqItems.push(item);
+  saveFaq();
+  console.log(`[FAQ] ✅ Ajout: ${item.question.substring(0,50)}`);
+  res.json({ ok: true, item });
+});
+
+app.put("/admin/faq/:id", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const { question, reponse } = req.body;
+  const idx = faqItems.findIndex(f => f.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "Introuvable" });
+  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
+  faqItems[idx] = { ...faqItems[idx], question: question.trim(), reponse: reponse.trim() };
+  saveFaq();
+  console.log(`[FAQ] ✅ Modifié: ${faqItems[idx].question.substring(0,50)}`);
+  res.json({ ok: true, item: faqItems[idx] });
+});
+
+app.delete("/admin/faq/:id", (req, res) => {
+  if (!checkAdminToken(req, res)) return;
+  const idx = faqItems.findIndex(f => f.id === req.params.id);
+  if (idx < 0) return res.status(404).json({ error: "Introuvable" });
+  const [removed] = faqItems.splice(idx, 1);
+  saveFaq();
+  console.log(`[FAQ] 🗑 Supprimé: ${removed.question.substring(0,50)}`);
+  res.json({ ok: true });
+});
 
 // ─── Routes admin logs ────────────────────────────────────────────────────────
 // Vider tous les logs (garde le fichier vide)
@@ -2649,7 +2709,7 @@ wss.on("connection", (twilioWs) => {
         modalities:          ["text", "audio"],
         temperature:         0.6,
         input_audio_transcription: {
-          model: "gpt-4o-transcribe",
+          model: "gpt-4o-mini-transcribe",
           language: "fr",
           prompt: "Conversation téléphonique en français québécois avec une réceptionniste de salon de coiffure. Vocabulaire fréquent : coupe homme, coupe femme, coloration, mise en plis, coiffeuse, rendez-vous, Calendly, cellulaire. Prénoms possibles : Ariane, Laurie, Sophie, Alexandre, Marie. Numéros de téléphone 10 chiffres format québécois ex: 514 894 5221. Mots typiques : 'c\'est beau', 'correct', 'ouais', 'tantôt', 'tout suite', 'la semaine passée', 'à matin'. Noms de villes : Magog, Sherbrooke, Québec. Le client peut épeler son numéro chiffre par chiffre.",
         },
@@ -2663,7 +2723,7 @@ wss.on("connection", (twilioWs) => {
         type: "message", role: "user",
         content: [{
           type: "input_text",
-          text: "PHRASE OBLIGATOIRE — dis mot pour mot, sans rien ajouter ni retrancher : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle Hélène votre assistante virtuelle! Je peux t\'aider à prendre un rendez-vous, te donner nos heures d\'ouverture, notre liste de prix ou notre adresse. En tout temps, si tu veux parler à un membre de l\'équipe, dis simplement Équipe et je te transfère.' — Dis cette phrase EN ENTIER, mot pour mot, puis SILENCE ABSOLU. Le système va t\'envoyer un message immédiatement après pour te dire quoi dire ensuite selon le dossier du client.",
+          text: "PHRASE OBLIGATOIRE — dis mot pour mot, sans rien ajouter ni retrancher : 'Bienvenu au " + SALON_NAME + " à " + SALON_CITY + ", je m\'appelle " + AGENT_NAME + " votre assistante virtuelle! Je peux t\'aider à prendre un rendez-vous, te donner nos heures d\'ouverture, notre liste de prix ou notre adresse. En tout temps, si tu veux parler à un membre de l\'équipe, dis simplement Équipe et je te transfère.' — Dis cette phrase EN ENTIER, mot pour mot, puis SILENCE ABSOLU. Le système va t\'envoyer un message immédiatement après pour te dire quoi dire ensuite selon le dossier du client.",
         }],
       },
     }));
@@ -2943,7 +3003,7 @@ wss.on("connection", (twilioWs) => {
               modalities:   ["text", "audio"],
               temperature:  0.6,
               input_audio_transcription: {
-          model: "gpt-4o-transcribe",
+          model: "gpt-4o-mini-transcribe",
           language: "fr",
           prompt: "Conversation téléphonique en français québécois avec une réceptionniste de salon de coiffure. Vocabulaire fréquent : coupe homme, coupe femme, coloration, mise en plis, coiffeuse, rendez-vous, Calendly, cellulaire. Prénoms possibles : Ariane, Laurie, Sophie, Alexandre, Marie. Numéros de téléphone 10 chiffres format québécois ex: 514 894 5221. Mots typiques : 'c\'est beau', 'correct', 'ouais', 'tantôt', 'tout suite', 'la semaine passée', 'à matin'. Noms de villes : Magog, Sherbrooke, Québec. Le client peut épeler son numéro chiffre par chiffre.",
         },
