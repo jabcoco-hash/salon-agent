@@ -18,6 +18,16 @@ import twilio           from "twilio";
 import fs               from "fs";
 import path             from "path";
 
+import { fileURLToPath } from "url";
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Servir le site web (HTML/CSS/Images) depuis /public
+app.use(express.static(path.join(__dirname, "public")));
+// Page d'accueil
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
 const app        = express();
 const httpServer = createServer(app);
 const wss        = new WebSocketServer({ server: httpServer });
