@@ -718,7 +718,7 @@ ${Object.keys(serviceDescriptions).length > 0 ? "- Détails par service :\n" + O
 - Paiement : ${SALON_PAYMENT}
 - Stationnement : ${SALON_PARKING}
 - Accessibilité : ${SALON_ACCESS}
-- Numéro appelant : ${callerNumber || "inconnu"}
+- Numéro appelant : [confidentiel]
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ÉTATS CONVERSATIONNELS — AVANCE TOUJOURS EN AVANT
@@ -1703,6 +1703,41 @@ app.get("/dashboard", (req, res) => {
 
   const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🙋", helene:"🤖" }[t] || "•");
 
+  // Anonymiser tous les numéros de téléphone dans un texte
+  // Couvre: +1XXXXXXXXXX, (514) 894-5221, 514-894-5221, 5148945221
+  // ET les numéros épelés en lettres françaises (cinq-un-quatre, huit-neuf-quatre, etc.)
+  const DIGIT_WORDS_FR = ["zéro","un","deux","trois","quatre","cinq","six","sept","huit","neuf",
+    "zero","une"]; // variantes
+  function anonymizePhone(text) {
+    if (!text) return text;
+    let s = text;
+    // Numéros E.164 : +1XXXXXXXXXX ou +XXXXXXXXXXX
+    s = s.replace(/\+1?\d{10,11}/g, "##########");
+    // Numéros formatés : (514) 894-5221 ou 514-894-5221 ou 514 894 5221
+    s = s.replace(/\(?\d{3}\)?[\s\-\.]\d{3}[\s\-\.]\d{4}/g, "###-###-####");
+    // 10 chiffres collés : 5148945221
+    s = s.replace(/\b\d{10}\b/g, "##########");
+    // Séquences de chiffres épelés en lettres (ex: "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un")
+    // Détecter 10+ mots-chiffres consécutifs séparés par tiret/virgule/espace
+    const DIGIT_PAT = "(zéro|zero|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf)";
+    const spelledPhone = new RegExp(
+      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" +
+      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" +
+      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT,
+      "gi"
+    );
+    s = s.replace(spelledPhone, "###-###-####");
+    // Groupes de chiffres épelés plus courts (3 groupes ex: "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un")
+    const spelledGroup = new RegExp(
+      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")[,\\s]+" +
+      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")[,\\s]+" +
+      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")",
+      "gi"
+    );
+    s = s.replace(spelledGroup, "###-###-####");
+    return s;
+  }
+
   // Agréger domaines et questions non répondues de tous les appels
   const allDomains = [...new Set(logs.flatMap(l => l.domains || []))];
   const allUnanswered = [...new Set(logs.flatMap(l => l.unanswered_questions || []))];
@@ -1712,7 +1747,7 @@ app.get("/dashboard", (req, res) => {
     <details class="call-card">
       <summary>
         <span class="badge" style="background:${badgeColor(log.result)}">${log.result}</span>
-        <span class="caller">${log.callerNumber ? "######" + log.callerNumber.replace(/\D/g,"").slice(-4) : "inconnu"}</span>
+
         <span class="time">${fmtTime(log.startedAt)}</span>
         <span class="dur">${duration(log)}</span>
         ${log.clientNom ? `<span class="tag tag-nom">👤 ${log.clientNom}</span>` : ""}
@@ -1724,12 +1759,12 @@ app.get("/dashboard", (req, res) => {
       ${log.resumeClient?.length ? `
       <div class="resume">
         <div class="resume-title">🗣️ Transcription client <span style="font-size:.68rem;color:#9ca3af;font-weight:400">(reconnaissance vocale Whisper — peut contenir des erreurs)</span></div>
-        ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+        ${log.resumeClient.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/[^\x00-\x7F\u00C0-\u024F\u0080-\u00FF ]/g,""); return `<div class="resume-line"><span class="rnum">${i+1}</span>${anonymizePhone(safe)}</div>`; }).join("")}
       </div>` : ""}
       ${log.unanswered_questions?.length ? `
       <div class="resume resume-warn">
         <div class="resume-title">❓ Questions non répondues</div>
-        ${log.unanswered_questions.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${safe}</div>`; }).join("")}
+        ${log.unanswered_questions.map((t,i) => { const safe = t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); return `<div class="resume-line"><span class="rnum">${i+1}</span>${anonymizePhone(safe)}</div>`; }).join("")}
       </div>` : ""}
       ${log.domains?.length ? `
       <div class="resume resume-green">
@@ -1746,28 +1781,10 @@ app.get("/dashboard", (req, res) => {
           <div class="event event-${e.type}">
             <span class="ets">${fmtTime(e.ts)}</span>
             <span class="eic">${eventIcon(e.type)}</span>
-            <span class="emsg">${e.msg}</span>
+            <span class="emsg">${anonymizePhone(e.msg)}</span>
           </div>`).join("")}
       </div>
-      ${(() => {
-        if (!log.serverLog || !log.serverLog.length) return "";
-        const colorLine = (line) => {
-          const s = line.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-          let c = "#94a3b8";
-          if (s.includes("[OAI]") || s.includes("[TOOL]") || s.includes("[TOOL RESULT]")) c = "#a78bfa";
-          else if (s.includes("[SLOTS]") || s.includes("[CALENDLY]")) c = "#60a5fa";
-          else if (s.includes("[BOOKING]") || s.includes("✅")) c = "#4ade80";
-          else if (s.includes("[LOOKUP]") || s.includes("[GOOGLE]")) c = "#fbbf24";
-          else if (s.includes("[SMS]") || s.includes("[Twilio]") || s.includes("[VOICE]")) c = "#f472b6";
-          else if (s.includes("[ERREUR]") || s.includes("[AVERT]")) c = "#f87171";
-          return "<div style=\"color:" + c + ";padding:1px 0;white-space:pre-wrap;word-break:break-all\">" + s + "</div>";
-        };
-        return "<div style=\"padding:10px 14px 14px;background:#0c1220;border-top:2px solid #1e293b;border-radius:0 0 10px 10px\">"
-          + "<div style=\"font-size:.68rem;font-weight:700;color:#4a6fa5;letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px\">&#9679; Logs Railway — " + log.serverLog.length + " entrées</div>"
-          + "<div style=\"font-family:monospace;font-size:.72rem;line-height:1.7\">"
-          + log.serverLog.map(colorLine).join("")
-          + "</div></div>";
-      })()}
+
     </details>`).join("") || "<p class='empty'>Aucun appel enregistré.</p>";
 
   res.type("text/html").send(`<!DOCTYPE html>
@@ -1869,11 +1886,14 @@ ${SALON_LOGO_URL
     ? `<div style="margin-bottom:12px"><img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:52px;max-width:180px;object-fit:contain"></div>`
     : ""}<h1>${SALON_LOGO_URL ? "" : "✂️ "}${SALON_NAME} — Dashboard appels</h1>
   <div style="font-size:.72rem;color:#9ca3af;margin-top:-8px;margin-bottom:4px">v23 · 1 Mar 2026</div>
-<p class="sub">
-  Les ${logs.length} derniers appels (max ${MAX_LOGS})
-  &nbsp;·&nbsp;<a href="/dashboard">Rafraîchir</a>
-  &nbsp;·&nbsp;<a href="#" onclick="openDangerModal('clear')">🗑 Vider</a>
-  &nbsp;·&nbsp;<a class="danger" href="#" onclick="openDangerModal('delete')">❌ Supprimer fichier</a>
+<div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:4px">
+  <p class="sub" style="margin-bottom:0">
+    Les ${logs.length} derniers appels (max ${MAX_LOGS})
+    &nbsp;·&nbsp;<a href="/dashboard">Rafraîchir</a>
+    &nbsp;·&nbsp;<a href="#" onclick="openDangerModal('clear')">🗑 Vider</a>
+    &nbsp;·&nbsp;<a class="danger" href="#" onclick="openDangerModal('delete')">❌ Supprimer fichier</a>
+  </p>
+  <a href="/admin/config" style="display:inline-flex;align-items:center;gap:7px;background:#6c47ff;color:#fff;padding:9px 20px;border-radius:9px;font-size:.87rem;font-weight:700;text-decoration:none;white-space:nowrap;box-shadow:0 2px 8px rgba(108,71,255,.18)">⚙️ Config</a>
 </div>
 
 <!-- Modal sécurisé pour actions dangereuses -->
@@ -1952,12 +1972,6 @@ document.getElementById('dangerModal').addEventListener('click', function(e){ if
   <div class="tile tile-email" onclick="togglePanel('panel-email', this)">
     <div class="tile-n">${allEmailDomains.length}</div><div class="tile-l">📧 Domaines email</div>
   </div>
-  <a class="tile tile-admin" href="/admin/salon">
-    <div class="tile-n">⚙️</div><div class="tile-l">Config salon</div>
-  </a>
-  <a class="tile tile-admin" href="/admin/faq/page" style="background:#d97706;border-color:#d97706">
-    <div class="tile-n" style="font-size:1.1rem">${faqItems.length > 0 ? faqItems.length : "❓"}</div><div class="tile-l" style="color:#fef3c7">FAQ Hélène</div>
-  </a>
 </div>
 
 <!-- Panneaux dépliables -->
@@ -2008,621 +2022,298 @@ function togglePanel(id, tile) {
 </html>`);
 });
 
-// ─── Page admin salon ────────────────────────────────────────────────────────
-app.get("/admin/salon", (req, res) => {
+// ─── Page admin/config (salon + FAQ en 2 onglets) ───────────────────────────
+app.get("/admin/salon", (req, res) => res.redirect("/admin/config?tab=salon"));
+app.get("/admin/faq/page", (req, res) => res.redirect("/admin/config?tab=faq"));
+
+app.get("/admin/config", (req, res) => {
+  const activeTab = req.query.tab === "faq" ? "faq" : "salon";
   const SALON_VARS = [
-    { key: "SALON_NAME",       label: "Nom du salon",           val: SALON_NAME,       multi: false },
-    { key: "SALON_CITY",       label: "Ville",                  val: SALON_CITY,       multi: false },
-    { key: "SALON_ADDRESS",    label: "Adresse",                val: SALON_ADDRESS,    multi: false },
-    { key: "SALON_HOURS",      label: "Heures d'ouverture",     val: SALON_HOURS,      multi: true  },
-    { key: "SALON_PRICE_LIST", label: "Liste de prix",          val: SALON_PRICE_LIST, multi: true  },
-    { key: "SALON_PAYMENT",    label: "Modes de paiement",      val: SALON_PAYMENT,    multi: true  },
-    { key: "SALON_PARKING",    label: "Stationnement",          val: SALON_PARKING,    multi: true  },
-    { key: "SALON_ACCESS",     label: "Accessibilité",          val: SALON_ACCESS,     multi: true  },
-    { key: "SALON_LOGO_URL",   label: "URL du logo",            val: SALON_LOGO_URL,   multi: false },
+    { key: "SALON_NAME",       label: "Nom du salon",          val: SALON_NAME,       multi: false },
+    { key: "SALON_CITY",       label: "Ville",                 val: SALON_CITY,       multi: false },
+    { key: "SALON_ADDRESS",    label: "Adresse",               val: SALON_ADDRESS,    multi: false },
+    { key: "SALON_HOURS",      label: "Heures d'ouverture",    val: SALON_HOURS,      multi: true  },
+    { key: "SALON_PRICE_LIST", label: "Liste de prix",         val: SALON_PRICE_LIST, multi: true  },
+    { key: "SALON_PAYMENT",    label: "Modes de paiement",     val: SALON_PAYMENT,    multi: true  },
+    { key: "SALON_PARKING",    label: "Stationnement",         val: SALON_PARKING,    multi: true  },
+    { key: "SALON_ACCESS",     label: "Accessibilité",         val: SALON_ACCESS,     multi: true  },
+    { key: "SALON_LOGO_URL",   label: "URL du logo",           val: SALON_LOGO_URL,   multi: false },
   ];
-
   const hasRailwayAPI = !!(RAILWAY_API_TOKEN && RAILWAY_SERVICE_ID && RAILWAY_ENVIRONMENT_ID);
-  console.log("[ADMIN] Railway API:", hasRailwayAPI ? "✅" : "❌", {
-    token: !!RAILWAY_API_TOKEN, svc: RAILWAY_SERVICE_ID, env: RAILWAY_ENVIRONMENT_ID
-  });
 
-  const fields = SALON_VARS.map(v => {
+  const salonFields = SALON_VARS.map(v => {
     const safe = (v.val || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
-    if (v.multi) {
-      return `<div class="field">
-        <label for="${v.key}">${v.label} <span class="badge-multi">multiligne</span></label>
-        <textarea id="${v.key}" name="${v.key}" rows="4">${safe}</textarea>
-      </div>`;
-    }
-    return `<div class="field">
-      <label for="${v.key}">${v.label}</label>
-      <input type="text" id="${v.key}" name="${v.key}" value="${safe}">
-    </div>`;
+    if (v.multi) return "<div class=\"field\"><label>"+v.label+" <span class=\"badge-multi\">multiligne</span></label><textarea id=\""+v.key+"\" name=\""+v.key+"\" rows=\"3\">"+safe+"</textarea></div>";
+    return "<div class=\"field\"><label>"+v.label+"</label><input type=\"text\" id=\""+v.key+"\" name=\""+v.key+"\" value=\""+safe+"\"></div>";
   }).join("");
 
   res.type("text/html").send(`<!DOCTYPE html>
 <html lang="fr">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Config salon — ${SALON_NAME}</title>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Configuration — ${SALON_NAME}</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:32px 24px}
-  .card{background:#fff;border:1.5px solid #e5e7eb;border-radius:14px;padding:28px 32px;max-width:680px;margin:0 auto}
-  h1{font-size:1.3rem;font-weight:700;color:#6c47ff;margin-bottom:4px}
-  .sub{color:#6b7280;font-size:.85rem;margin-bottom:24px}
-  .sub a{color:#6c47ff;text-decoration:none}
-  .field{margin-bottom:18px}
-  label{display:block;font-size:.82rem;font-weight:600;color:#374151;margin-bottom:6px;display:flex;align-items:center;gap:8px}
-  .badge-multi{background:#ede9fe;color:#6c47ff;font-size:.70rem;padding:1px 7px;border-radius:8px;font-weight:600}
-  input[type=text],input[type=password],textarea{width:100%;padding:10px 12px;font-size:.92rem;border:1.5px solid #d1d5db;border-radius:8px;outline:none;font-family:inherit;resize:vertical}
-  input[type=text]:focus,input[type=password]:focus,textarea:focus{border-color:#6c47ff}
-  textarea{line-height:1.5}
-  .note{background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:14px 16px;font-size:.82rem;color:#5b21b6;margin-bottom:22px;line-height:1.6}
-  .note code{background:#ede9fe;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.80rem}
-  .note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
-  .btn{display:inline-flex;align-items:center;gap:6px;background:#6c47ff;color:#fff;border:none;padding:11px 24px;border-radius:8px;font-size:.90rem;font-weight:600;cursor:pointer}
-  .btn:hover{background:#5538d4}
-  .btn:disabled{background:#c4b5fd;cursor:not-allowed}
-  .btn-back{background:#f3f4f6;color:#374151;margin-right:10px}
-  .btn-back:hover{background:#e5e7eb}
-  .btn-save{background:#059669}
-  .btn-save:hover{background:#047857}
-  .alert{border-radius:8px;padding:12px 16px;margin-bottom:18px;font-size:.88rem;display:none}
-  .alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
-  .alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
-  .alert-info{background:#eff6ff;border:1.5px solid #93c5fd;color:#1e40af}
-
-  .spinner{display:none;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .logo-preview{max-height:48px;max-width:160px;object-fit:contain;margin-top:8px;border-radius:6px;display:none}
-  hr{border:none;border-top:1.5px solid #f3f4f6;margin:22px 0}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:28px 20px}
+.page{max-width:740px;margin:0 auto}
+.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.back-link{color:#6c47ff;text-decoration:none;font-size:.85rem;font-weight:600}
+.back-link:hover{text-decoration:underline}
+h1{font-size:1.25rem;font-weight:800;color:#1a1a2e;margin-bottom:18px}
+.tabs{display:flex;border-bottom:2px solid #e5e7eb;margin-bottom:24px}
+.tab{padding:11px 28px;font-size:.90rem;font-weight:700;color:#6b7280;border:none;background:none;cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px}
+.tab:hover{color:#6c47ff}
+.tab.active{color:#6c47ff;border-bottom-color:#6c47ff}
+.tab-panel{display:none}.tab-panel.active{display:block}
+.card{background:#fff;border:1.5px solid #e5e7eb;border-radius:14px;padding:26px 28px}
+.field{margin-bottom:16px}
+label{display:block;font-size:.82rem;font-weight:600;color:#374151;margin-bottom:5px}
+.badge-multi{background:#ede9fe;color:#6c47ff;font-size:.70rem;padding:1px 7px;border-radius:8px;font-weight:600;margin-left:6px}
+input[type=text],input[type=password],textarea{width:100%;padding:9px 12px;font-size:.90rem;border:1.5px solid #d1d5db;border-radius:8px;outline:none;font-family:inherit;resize:vertical}
+input:focus,textarea:focus{border-color:#6c47ff}
+.note{background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:12px 14px;font-size:.82rem;color:#5b21b6;margin-bottom:18px;line-height:1.6}
+.note.warn{background:#fffbeb;border-color:#fde68a;color:#92400e}
+.note code{background:#ede9fe;padding:1px 5px;border-radius:4px;font-family:monospace;font-size:.78rem}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:10px 22px;border-radius:8px;font-size:.88rem;font-weight:700;cursor:pointer;border:none}
+.btn-save{background:#6c47ff;color:#fff}.btn-save:hover{background:#5538d4}
+.btn-save:disabled{background:#c4b5fd;cursor:not-allowed}
+.btn-sec{background:#f3f4f6;color:#374151;border:1.5px solid #e5e7eb}.btn-sec:hover{background:#e5e7eb}
+.btn-add{background:#6c47ff;color:#fff;font-size:.85rem;padding:8px 18px;border-radius:8px;cursor:pointer;border:none;font-weight:700;display:inline-flex;align-items:center;gap:6px}.btn-add:hover{background:#5538d4}
+.spinner{display:none;width:15px;height:15px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.alert{border-radius:8px;padding:11px 15px;margin-bottom:16px;font-size:.87rem;display:none}
+.alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
+.alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
+.alert-info{background:#eff6ff;border:1.5px solid #93c5fd;color:#1e40af}
+hr{border:none;border-top:1.5px solid #f3f4f6;margin:20px 0}
+.logo-preview{max-height:44px;max-width:150px;object-fit:contain;margin-top:7px;border-radius:5px;display:none}
+.faq-toolbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap}
+.tok-input{padding:8px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.83rem;outline:none;width:200px}
+.tok-input:focus{border-color:#6c47ff}
+.faq-row{background:#fff;border:1.5px solid #e5e7eb;border-radius:11px;margin-bottom:8px;overflow:hidden}
+.faq-head{display:flex;align-items:center;gap:10px;padding:13px 16px;cursor:pointer;user-select:none}
+.faq-head:hover{background:#f9f8ff}
+.faq-num{background:#ede9fe;color:#6c47ff;border-radius:6px;padding:2px 9px;font-size:.75rem;font-weight:700;min-width:28px;text-align:center}
+.faq-q{flex:1;font-size:.88rem;font-weight:600;color:#1a1a2e}
+.faq-arrow{color:#9ca3af;font-size:.80rem}
+.faq-body{border-top:1.5px solid #f3f4f6;padding:14px 16px;background:#fafafa}
+.faq-ans{font-size:.85rem;color:#374151;line-height:1.6;margin-bottom:12px;white-space:pre-wrap}
+.faq-actions{display:flex;gap:8px}
+.btn-edit{background:#eff6ff;color:#2563eb;border:1px solid #bfdbfe;border-radius:7px;padding:5px 14px;font-size:.80rem;cursor:pointer;font-weight:600}.btn-edit:hover{background:#dbeafe}
+.btn-del{background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:7px;padding:5px 14px;font-size:.80rem;cursor:pointer;font-weight:600}.btn-del:hover{background:#fee2e2}
+.empty-faq{color:#9ca3af;text-align:center;padding:32px;font-size:.88rem;background:#fafafa;border-radius:10px;border:1.5px dashed #e5e7eb}
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center}
+.modal-bg.open{display:flex}
+.modal{background:#fff;border-radius:14px;padding:28px 26px;max-width:500px;width:95%;box-shadow:0 8px 40px rgba(0,0,0,.18)}
+.modal h3{font-size:1rem;font-weight:700;color:#1a1a2e;margin-bottom:14px}
+.modal label{font-size:.82rem;font-weight:600;color:#374151;display:block;margin-bottom:5px;margin-top:12px}
+.modal input,.modal textarea{width:100%;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;outline:none;font-family:inherit}
+.modal input:focus,.modal textarea:focus{border-color:#6c47ff}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.tok-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:300;align-items:center;justify-content:center}
+.tok-modal.open{display:flex}
+.tok-inner{background:#fff;border-radius:14px;padding:28px 26px;max-width:380px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.2)}
 </style>
 </head>
 <body>
-<div class="card">
-  ${SALON_LOGO_URL ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:52px;max-width:180px;object-fit:contain;margin-bottom:12px;display:block">` : ""}
-  <h1>⚙️ Configuration du salon</h1>
-  <p class="sub"><a href="/dashboard">← Retour au dashboard</a></p>
+<div class="page">
+  <div class="topbar">
+    ${SALON_LOGO_URL ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:40px;object-fit:contain">` : `<strong>${SALON_NAME}</strong>`}
+    <a href="/dashboard" class="back-link">← Dashboard</a>
+  </div>
+  <h1>⚙️ Configuration</h1>
+  <div class="tabs">
+    <button class="tab ${activeTab==="salon"?"active":""}" onclick="switchTab('salon')">🏢 Entreprise</button>
+    <button class="tab ${activeTab==="faq"?"active":""}" onclick="switchTab('faq')">❓ FAQ Hélène</button>
+  </div>
 
-  ${hasRailwayAPI ? `` : `
-  <div class="note warn">
-    ⚠️ <strong>Sauvegarde Railway non configurée.</strong> Ajoute ces variables dans Railway pour activer la sauvegarde directe :<br><br>
-    <code>RAILWAY_API_TOKEN</code> · <code>RAILWAY_SERVICE_ID</code> · <code>RAILWAY_ENVIRONMENT_ID</code><br><br>
-    En attendant, utilise le bouton <strong>Copier pour Railway</strong>.
-  </div>`}
+  <!-- Onglet Entreprise -->
+  <div class="tab-panel ${activeTab==="salon"?"active":""}" id="tab-salon">
+    <div class="card">
+      ${hasRailwayAPI ? "" : `<div class="note warn">⚠️ <strong>Sauvegarde Railway non configurée.</strong><br>Ajoute <code>RAILWAY_API_TOKEN</code>, <code>RAILWAY_SERVICE_ID</code>, <code>RAILWAY_ENVIRONMENT_ID</code>.</div>`}
+      <div id="alertOk" class="alert alert-ok"></div>
+      <div id="alertErr" class="alert alert-err"></div>
+      <div id="alertInfo" class="alert alert-info"></div>
+      <form id="salonForm">${salonFields}
+        <img id="logoPreview" class="logo-preview" alt="Aperçu logo">
+      </form>
+      <hr>
+      ${hasRailwayAPI ? `<button class="btn btn-save" id="btnSave" onclick="saveToRailway()"><span class="spinner" id="spinner"></span>💾 Sauvegarder &amp; redéployer</button>` : ""}
+    </div>
+  </div>
 
-  <div id="alertOk" class="alert alert-ok"></div>
-  <div id="alertErr" class="alert alert-err"></div>
-  <div id="alertInfo" class="alert alert-info"></div>
-
-  <form id="salonForm">
-    ${fields}
-    <img id="logoPreview" class="logo-preview" alt="Aperçu logo">
-  </form>
-
-  <hr>
-  <div>
-    <button type="button" class="btn btn-back" onclick="window.location='/dashboard'">← Dashboard</button>
-    ${hasRailwayAPI ? `<button type="button" class="btn btn-save" id="btnSave" onclick="saveToRailway()">
-      <span class="spinner" id="spinner"></span>💾 Sauvegarder & redéployer
-    </button>` : ""}
+  <!-- Onglet FAQ -->
+  <div class="tab-panel ${activeTab==="faq"?"active":""}" id="tab-faq">
+    <div class="card">
+      <div class="faq-toolbar">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:.82rem;color:#6b7280;white-space:nowrap">Token admin :</span>
+          <input type="password" id="tok" class="tok-input" placeholder="ADMIN_TOKEN">
+        </div>
+        <button class="btn-add" onclick="openAddModal()">➕ Ajouter</button>
+      </div>
+      <div id="alertFaqOk" class="alert alert-ok"></div>
+      <div id="alertFaqErr" class="alert alert-err"></div>
+      <div id="faqList"><p class="empty-faq">Chargement...</p></div>
+    </div>
   </div>
 </div>
 
-<!-- Modal token -->
-<div id="tokenModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:999;display:none;align-items:center;justify-content:center">
-  <div style="background:#fff;border-radius:14px;padding:32px 28px;max-width:400px;width:90%;box-shadow:0 8px 40px rgba(0,0,0,.2)">
-    <h2 style="font-size:1.1rem;font-weight:700;color:#1a1a2e;margin-bottom:8px">🔐 Token administrateur</h2>
-    <p style="font-size:.85rem;color:#6b7280;margin-bottom:18px">Entre ton ADMIN_TOKEN pour autoriser la sauvegarde.</p>
-    <input type="password" id="modalToken" placeholder="ADMIN_TOKEN" autocomplete="off"
-      style="width:100%;padding:11px 13px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.95rem;margin-bottom:14px;box-sizing:border-box"
-      onkeydown="if(event.key==='Enter')confirmSave()">
+<!-- Modal FAQ ajout/modif -->
+<div class="modal-bg" id="faqModal">
+  <div class="modal">
+    <h3 id="modalTitle">Ajouter une question</h3>
+    <label>Question</label>
+    <input type="text" id="modalQ" placeholder="Ex: Acceptez-vous les cartes de crédit?">
+    <label>Réponse d'Hélène</label>
+    <textarea id="modalA" rows="4" placeholder="Réponse qu'Hélène donnera..."></textarea>
+    <input type="hidden" id="modalId">
+    <div class="modal-actions">
+      <button class="btn btn-sec" onclick="closeFaqModal()">Annuler</button>
+      <button class="btn btn-save" onclick="saveModal()">💾 Sauvegarder</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal token Railway -->
+<div class="tok-modal" id="tokModal">
+  <div class="tok-inner">
+    <h2 style="font-size:1rem;font-weight:700;margin-bottom:8px">🔐 Token administrateur</h2>
+    <p style="font-size:.84rem;color:#6b7280;margin-bottom:14px">Entre ton ADMIN_TOKEN pour sauvegarder.</p>
+    <input type="password" id="railwayToken" placeholder="ADMIN_TOKEN" autocomplete="off"
+      style="width:100%;padding:10px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.92rem;margin-bottom:14px;box-sizing:border-box"
+      onkeydown="if(event.key==='Enter')confirmRailwaySave()">
     <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button onclick="closeModal()" style="padding:9px 20px;border:1.5px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;font-size:.88rem">Annuler</button>
-      <button onclick="confirmSave()" style="padding:9px 22px;background:#059669;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:.88rem">Confirmer</button>
+      <button onclick="closeTokModal()" style="padding:8px 18px;border:1.5px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer">Annuler</button>
+      <button onclick="confirmRailwaySave()" style="padding:8px 20px;background:#059669;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer">Confirmer</button>
     </div>
   </div>
 </div>
 
 <script>
-const KEYS = ${JSON.stringify(SALON_VARS.map(v=>v.key))};
+function switchTab(t){
+  document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.textContent.toLowerCase().includes(t==="salon"?"entreprise":"faq")));
+  document.querySelectorAll(".tab-panel").forEach(p=>p.classList.toggle("active",p.id==="tab-"+t));
+  history.replaceState(null,"","/admin/config?tab="+t);
+}
 
-// Aperçu logo en temps réel
-const logoInput = document.getElementById("SALON_LOGO_URL");
-const logoPreview = document.getElementById("logoPreview");
-if (logoInput) {
-  logoInput.addEventListener("input", () => {
-    const url = logoInput.value.trim();
-    if (url) { logoPreview.src = url; logoPreview.style.display = "block"; }
-    else logoPreview.style.display = "none";
+// Aperçu logo
+(function(){
+  var li=document.getElementById("SALON_LOGO_URL"),lp=document.getElementById("logoPreview");
+  if(!li)return;
+  li.addEventListener("input",function(){var u=li.value.trim();if(u){lp.src=u;lp.style.display="block";}else lp.style.display="none";});
+  if(li.value.trim()){lp.src=li.value.trim();lp.style.display="block";}
+})();
+
+// Config salon
+var KEYS=${JSON.stringify(SALON_VARS.map(v=>v.key))};
+function getValues(){var o={};KEYS.forEach(k=>{var e=document.getElementById(k);if(e)o[k]=e.value;});return o;}
+function showAlert(id,msg){["alertOk","alertErr","alertInfo"].forEach(i=>{var e=document.getElementById(i);if(e){e.style.display="none";e.textContent="";}});var e=document.getElementById(id);if(e){e.textContent=msg;e.style.display="block";e.scrollIntoView({behavior:"smooth",block:"nearest"});}}
+function saveToRailway(){document.getElementById("tokModal").classList.add("open");setTimeout(()=>document.getElementById("railwayToken").focus(),50);}
+function closeTokModal(){document.getElementById("tokModal").classList.remove("open");document.getElementById("railwayToken").value="";}
+document.getElementById("tokModal").addEventListener("click",function(e){if(e.target===this)closeTokModal();});
+async function confirmRailwaySave(){
+  var token=document.getElementById("railwayToken").value.trim();
+  if(!token){document.getElementById("railwayToken").style.borderColor="#dc2626";return;}
+  closeTokModal();
+  var btn=document.getElementById("btnSave"),sp=document.getElementById("spinner");
+  if(btn)btn.disabled=true;if(sp)sp.style.display="inline-block";
+  showAlert("alertInfo","⏳ Sauvegarde en cours...");
+  try{
+    var r=await fetch("/admin/salon/save?token="+encodeURIComponent(token),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({variables:getValues()})});
+    var j;try{j=await r.json();}catch(pe){throw new Error("Réponse invalide ("+r.status+")");}
+    if(!r.ok||!j.ok)throw new Error(j.error||"Erreur HTTP "+r.status);
+    if(j.redeployed){
+      var sec=60,el=document.getElementById("alertOk");
+      showAlert("alertOk","✅ Sauvegardé! Redémarrage...");
+      var iv=setInterval(function(){sec--;el.textContent="✅ Rafraîchir dans "+sec+"s...";if(sec<=0){clearInterval(iv);el.textContent="✅ Prêt — rafraîchis la page.";}},1000);
+    }else{showAlert("alertOk","✅ Variables sauvegardées."+(j.warning?" Note: "+j.warning:""));}
+  }catch(e){showAlert("alertErr","❌ "+e.message);}
+  finally{if(btn)btn.disabled=false;if(sp)sp.style.display="none";}
+}
+
+// FAQ
+var faqData=[];
+function gettok(){return document.getElementById("tok").value.trim();}
+function showFaqOk(m){var e=document.getElementById("alertFaqOk");e.textContent=m;e.style.display="block";document.getElementById("alertFaqErr").style.display="none";setTimeout(function(){e.style.display="none";},4000);}
+function showFaqErr(m){var e=document.getElementById("alertFaqErr");e.textContent=m;e.style.display="block";document.getElementById("alertFaqOk").style.display="none";}
+
+function renderFaq(){
+  var list=document.getElementById("faqList");
+  if(!faqData.length){list.innerHTML="<p class='empty-faq'>Aucune question. Cliquez sur Ajouter.</p>";return;}
+  list.innerHTML=faqData.map(function(f,i){
+    return "<div class='faq-row' id='row-"+f.id+"'>"
+      +"<div class='faq-head' id='head-"+f.id+"'><span class='faq-num'>"+(i+1)+"</span>"
+      +"<span class='faq-q'>"+f.question.replace(/&/g,"&amp;").replace(/</g,"&lt;")+"</span>"
+      +"<span class='faq-arrow' id='arrow-"+f.id+"'>▼</span></div>"
+      +"<div class='faq-body' id='fbody-"+f.id+"' style='display:none'>"
+      +"<div class='faq-ans'>"+f.reponse.replace(/&/g,"&amp;").replace(/</g,"&lt;")+"</div>"
+      +"<div class='faq-actions'>"
+      +"<button class='btn-edit' id='edit-"+f.id+"'>✏️ Modifier</button>"
+      +"<button class='btn-del' id='del-"+f.id+"'>🗑 Supprimer</button>"
+      +"</div></div></div>";
+  }).join("");
+  faqData.forEach(function(f){
+    document.getElementById("head-"+f.id).addEventListener("click",function(){toggleFaq(f.id);});
+    document.getElementById("edit-"+f.id).addEventListener("click",function(){openEditModal(f.id);});
+    document.getElementById("del-"+f.id).addEventListener("click",function(){deleteFaq(f.id);});
   });
-  if (logoInput.value.trim()) { logoPreview.src = logoInput.value.trim(); logoPreview.style.display = "block"; }
 }
 
-function getValues() {
-  const vars = {};
-  KEYS.forEach(k => {
-    const el = document.getElementById(k);
-    if (el) vars[k] = el.value;
-  });
-  return vars;
+async function loadFaq(){
+  try{var r=await fetch("/admin/faq");var j=await r.json();faqData=j.items||[];renderFaq();}
+  catch(e){document.getElementById("faqList").innerHTML="<p class='empty-faq'>Erreur chargement FAQ.</p>";}
+}
+loadFaq();
+
+function toggleFaq(id){
+  var b=document.getElementById("fbody-"+id),a=document.getElementById("arrow-"+id);
+  var open=b.style.display!=="none";b.style.display=open?"none":"block";if(a)a.textContent=open?"▼":"▲";
+}
+function openAddModal(){
+  document.getElementById("modalTitle").textContent="Ajouter une question";
+  document.getElementById("modalQ").value="";document.getElementById("modalA").value="";document.getElementById("modalId").value="";
+  document.getElementById("faqModal").classList.add("open");setTimeout(function(){document.getElementById("modalQ").focus();},50);
+}
+function openEditModal(id){
+  var item=faqData.find(function(f){return f.id==id;});if(!item)return;
+  document.getElementById("modalTitle").textContent="Modifier la question";
+  document.getElementById("modalQ").value=item.question;document.getElementById("modalA").value=item.reponse;document.getElementById("modalId").value=id;
+  document.getElementById("faqModal").classList.add("open");setTimeout(function(){document.getElementById("modalQ").focus();},50);
+}
+function closeFaqModal(){document.getElementById("faqModal").classList.remove("open");}
+document.getElementById("faqModal").addEventListener("click",function(e){if(e.target===this)closeFaqModal();});
+
+async function saveModal(){
+  var tok=gettok();if(!tok){showFaqErr("⚠️ Entre ton token admin d'abord.");return;}
+  var q=document.getElementById("modalQ").value.trim(),a=document.getElementById("modalA").value.trim(),id=document.getElementById("modalId").value;
+  if(!q||!a){showFaqErr("Question et réponse obligatoires.");return;}
+  var isEdit=!!id,url=isEdit?"/admin/faq/"+id:"/admin/faq",method=isEdit?"PUT":"POST";
+  try{
+    var r=await fetch(url,{method:method,headers:{"Content-Type":"application/json","x-admin-token":tok},body:JSON.stringify({question:q,reponse:a})});
+    var j=await r.json();if(!r.ok||!j.ok){showFaqErr("❌ "+(j.error||"Erreur"));return;}
+    closeFaqModal();
+    if(isEdit){var idx=faqData.findIndex(function(f){return f.id==id;});if(idx>=0)faqData[idx]={id:id,question:q,reponse:a};}
+    else{faqData.push(j.item);}
+    renderFaq();showFaqOk(isEdit?"✅ Question modifiée.":"✅ Question ajoutée.");
+  }catch(e){showFaqErr("❌ "+e.message);}
 }
 
-function showAlert(id, msg) {
-  ["alertOk","alertErr","alertInfo"].forEach(i => {
-    const el = document.getElementById(i);
-    el.style.display = "none"; el.textContent = "";
-  });
-  const el = document.getElementById(id);
-  el.textContent = msg; el.style.display = "block";
-  el.scrollIntoView({behavior:"smooth", block:"nearest"});
-}
-
-function saveToRailway() {
-  // Ouvrir le modal pour saisir le token
-  const modal = document.getElementById("tokenModal");
-  modal.style.display = "flex";
-  setTimeout(() => document.getElementById("modalToken").focus(), 50);
-}
-
-function closeModal() {
-  document.getElementById("tokenModal").style.display = "none";
-  document.getElementById("modalToken").value = "";
-}
-
-// Fermer le modal si on clique en dehors
-document.getElementById("tokenModal").addEventListener("click", function(e) {
-  if (e.target === this) closeModal();
-});
-
-async function confirmSave() {
-  const token = document.getElementById("modalToken").value.trim();
-  if (!token) { document.getElementById("modalToken").style.borderColor = "#dc2626"; return; }
-  closeModal();
-
-  const btn = document.getElementById("btnSave");
-  const spinner = document.getElementById("spinner");
-  btn.disabled = true;
-  spinner.style.display = "inline-block";
-  showAlert("alertInfo", "⏳ Sauvegarde en cours...");
-
-  try {
-    const r = await fetch("/admin/salon/save?token=" + encodeURIComponent(token), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ variables: getValues() })
-    });
-    let j;
-    try { j = await r.json(); } catch(pe) { throw new Error("Réponse serveur invalide (status " + r.status + ")"); }
-    if (!r.ok || !j.ok) throw new Error(j.error || "Erreur HTTP " + r.status);
-
-    if (j.redeployed) {
-      showAlert("alertOk", "✅ Sauvegardé avec succès! Le serveur redémarre — veuillez patienter et rafraîchir la page dans 1 minute.");
-      // Compte à rebours visible
-      let sec = 60;
-      const el = document.getElementById("alertOk");
-      const interval = setInterval(() => {
-        sec--;
-        el.textContent = "✅ Sauvegardé! Redémarrage en cours — rafraîchir dans " + sec + "s...";
-        if (sec <= 0) { clearInterval(interval); el.textContent = "✅ Prêt — tu peux rafraîchir la page."; }
-      }, 1000);
-    } else {
-      showAlert("alertOk", "✅ Variables sauvegardées. " + (j.warning ? "Note: " + j.warning : ""));
-    }
-  } catch(e) {
-    showAlert("alertErr", "❌ " + e.message);
-    console.error("Save error:", e);
-  } finally {
-    btn.disabled = false;
-    spinner.style.display = "none";
-  }
+async function deleteFaq(id){
+  var tok=gettok();if(!tok){showFaqErr("⚠️ Token admin requis.");return;}
+  if(!confirm("Supprimer cette question?"))return;
+  try{
+    var r=await fetch("/admin/faq/"+id,{method:"DELETE",headers:{"x-admin-token":tok}});
+    var j=await r.json();if(!r.ok||!j.ok){showFaqErr("❌ "+(j.error||"Erreur"));return;}
+    faqData=faqData.filter(function(f){return f.id!=id;});renderFaq();showFaqOk("🗑 Question supprimée.");
+  }catch(e){showFaqErr("❌ "+e.message);}
 }
 </script>
 </body>
 </html>`);
 });
 
-// ─── Routes FAQ ───────────────────────────────────────────────────────────────
-const checkAdminToken = (req, res) => {
-  const token = req.headers["x-admin-token"] || req.query.token;
-  if (!token || token !== (process.env.ADMIN_TOKEN || "")) {
-    res.status(401).json({ error: "Non autorisé" });
-    return false;
-  }
-  return true;
-};
 
-app.get("/admin/faq", (req, res) => {
-  // Lecture publique — pas besoin de token pour afficher la liste
-  res.json({ ok: true, items: faqItems });
-});
-
-app.post("/admin/faq", (req, res) => {
-  if (!checkAdminToken(req, res)) return;
-  const { question, reponse } = req.body || {};
-  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
-  const item = { id: Date.now().toString(), question: question.trim(), reponse: reponse.trim(), createdAt: new Date().toISOString() };
-  faqItems.push(item);
-  saveFaq();
-  console.log(`[FAQ] ✅ Ajout: ${item.question.substring(0,50)}`);
-  res.json({ ok: true, item });
-});
-
-app.put("/admin/faq/:id", (req, res) => {
-  if (!checkAdminToken(req, res)) return;
-  const idx = faqItems.findIndex(f => f.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: "Entrée non trouvée" });
-  const { question, reponse } = req.body || {};
-  if (!question?.trim() || !reponse?.trim()) return res.status(400).json({ error: "question et reponse requis" });
-  faqItems[idx] = { ...faqItems[idx], question: question.trim(), reponse: reponse.trim(), updatedAt: new Date().toISOString() };
-  saveFaq();
-  console.log(`[FAQ] ✅ Modifié: ${faqItems[idx].question.substring(0,50)}`);
-  res.json({ ok: true, item: faqItems[idx] });
-});
-
-app.delete("/admin/faq/:id", (req, res) => {
-  if (!checkAdminToken(req, res)) return;
-  const idx = faqItems.findIndex(f => f.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: "Entrée non trouvée" });
-  const removed = faqItems.splice(idx, 1)[0];
-  saveFaq();
-  console.log(`[FAQ] 🗑 Supprimé: ${removed.question.substring(0,50)}`);
-  res.json({ ok: true });
-});
-
-// ─── Route POST admin/salon/save → Railway API ───────────────────────────────
-app.post("/admin/salon/save", async (req, res) => {
-  const token = req.headers["x-admin-token"] || req.query.token;
-  if (token !== (process.env.ADMIN_TOKEN || "")) return res.status(401).json({ error: "Non autorisé" });
-
-  if (!RAILWAY_API_TOKEN || !RAILWAY_SERVICE_ID || !RAILWAY_ENVIRONMENT_ID) {
-    return res.status(500).json({ error: "Variables Railway manquantes: RAILWAY_API_TOKEN, RAILWAY_SERVICE_ID, RAILWAY_ENVIRONMENT_ID" });
-  }
-
-  const ALLOWED_KEYS = ["SALON_NAME","SALON_CITY","SALON_ADDRESS","SALON_HOURS","SALON_PRICE_LIST","SALON_PAYMENT","SALON_PARKING","SALON_ACCESS","SALON_LOGO_URL"];
-  const variables = req.body?.variables || {};
-
-  // Filtrer uniquement les clés autorisées
-  const toSet = Object.entries(variables)
-    .filter(([k]) => ALLOWED_KEYS.includes(k))
-    .map(([name, value]) => ({ name, value: String(value) }));
-
-  if (!toSet.length) return res.status(400).json({ error: "Aucune variable valide reçue" });
-
-  try {
-    // Mutation GraphQL Railway pour upsert variables
-    const mutation = `
-      mutation variableCollectionUpsert($input: VariableCollectionUpsertInput!) {
-        variableCollectionUpsert(input: $input)
-      }`;
-
-    const gqlRes = await fetch("https://backboard.railway.app/graphql/v2", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${RAILWAY_API_TOKEN}`,
-      },
-      body: JSON.stringify({
-        query: mutation,
-        variables: {
-          input: {
-            projectId:     RAILWAY_PROJECT_ID || undefined,
-            environmentId: RAILWAY_ENVIRONMENT_ID,
-            serviceId:     RAILWAY_SERVICE_ID,
-            variables:     Object.fromEntries(toSet.map(v => [v.name, v.value])),
-          }
-        }
-      })
-    });
-
-    const gqlJson = await gqlRes.json();
-    if (gqlJson.errors?.length) {
-      console.error("[RAILWAY] Erreur GraphQL:", JSON.stringify(gqlJson.errors));
-      return res.status(500).json({ error: gqlJson.errors[0]?.message || "Erreur Railway API" });
-    }
-
-    console.log("[RAILWAY] ✅ Variables mises à jour:", toSet.map(v=>v.name).join(", "));
-
-    // Déclencher un redeploy
-    const redeployMutation = `
-      mutation serviceInstanceRedeploy($serviceId: String!, $environmentId: String!) {
-        serviceInstanceRedeploy(serviceId: $serviceId, environmentId: $environmentId)
-      }`;
-
-    const rdRes = await fetch("https://backboard.railway.app/graphql/v2", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${RAILWAY_API_TOKEN}`,
-      },
-      body: JSON.stringify({
-        query: redeployMutation,
-        variables: { serviceId: RAILWAY_SERVICE_ID, environmentId: RAILWAY_ENVIRONMENT_ID }
-      })
-    });
-    const rdJson = await rdRes.json();
-    if (rdJson.errors?.length) {
-      console.warn("[RAILWAY] Redeploy warning:", rdJson.errors[0]?.message);
-      return res.json({ ok: true, saved: toSet.map(v=>v.name), redeployed: false, warning: rdJson.errors[0]?.message });
-    }
-
-    console.log("[RAILWAY] ✅ Redeploy déclenché");
-    return res.json({ ok: true, saved: toSet.map(v=>v.name), redeployed: true });
-
-  } catch(e) {
-    console.error("[RAILWAY] ❌", e.message);
-    return res.status(500).json({ error: e.message });
-  }
-});
-
-// ─── Page admin FAQ ──────────────────────────────────────────────────────────
-app.get("/admin/faq/script.js", (req, res) => {
-  res.type("application/javascript").send(`
-var faqData = [];
-
-function gettok() {
-  return document.getElementById("tok").value.trim();
-}
-
-function showOk(m) {
-  var e = document.getElementById("alertOk");
-  e.textContent = m; e.style.display = "block";
-  document.getElementById("alertErr").style.display = "none";
-  setTimeout(function() { e.style.display = "none"; }, 4000);
-}
-
-function showErr(m) {
-  var e = document.getElementById("alertErr");
-  e.textContent = m; e.style.display = "block";
-  document.getElementById("alertOk").style.display = "none";
-}
-
-function esc(s) {
-  return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function renderFaq() {
-  var list = document.getElementById("faqList");
-  var cnt = document.getElementById("faqCount");
-  cnt.textContent = faqData.length + " question" + (faqData.length !== 1 ? "s" : "") + " dans la FAQ d'Helene";
-  if (!faqData.length) {
-    list.innerHTML = '<p class="empty">Aucune question pour linstant.</p>';
-    return;
-  }
-  var h = "";
-  for (var i = 0; i < faqData.length; i++) {
-    var f = faqData[i];
-    var id = f.id;
-    h += '<div class="faq-row" id="row-' + id + '">';
-    h += '<div class="faq-head" data-id="' + id + '">';
-    h += '<span class="faq-num">' + (i + 1) + '</span>';
-    h += '<span class="faq-q">' + esc(f.question) + '</span>';
-    h += '<span class="faq-arrow" id="arrow-' + id + '">&#9660;</span>';
-    h += '</div>';
-    h += '<div class="faq-body" id="fbody-' + id + '" style="display:none">';
-    h += '<p class="faq-r">' + esc(f.reponse) + '</p>';
-    h += '<div class="faq-acts">';
-    h += '<button class="btn-sm btn-edit" data-id="' + id + '">✏️ Modifier</button>';
-    h += '<button class="btn-sm btn-del" data-id="' + id + '">🗑 Supprimer</button>';
-    h += '</div>';
-    h += '</div></div>';
-  }
-  list.innerHTML = h;
-
-  // Attacher les events après injection dans le DOM
-  document.querySelectorAll(".faq-head").forEach(function(el) {
-    el.addEventListener("click", function() { toggleFaq(el.getAttribute("data-id")); });
-  });
-  document.querySelectorAll(".btn-edit").forEach(function(el) {
-    el.addEventListener("click", function(e) { e.stopPropagation(); openEditModal(el.getAttribute("data-id")); });
-  });
-  document.querySelectorAll(".btn-del").forEach(function(el) {
-    el.addEventListener("click", function(e) { e.stopPropagation(); deleteFaq(el.getAttribute("data-id")); });
-  });
-}
-
-function toggleFaq(id) {
-  var body = document.getElementById("fbody-" + id);
-  var arrow = document.getElementById("arrow-" + id);
-  if (body.style.display === "none") {
-    body.style.display = "block";
-    arrow.innerHTML = "&#9650;";
-  } else {
-    body.style.display = "none";
-    arrow.innerHTML = "&#9660;";
-  }
-}
-
-function openAddModal() {
-  document.getElementById("modalTitle").textContent = "Ajouter une question";
-  document.getElementById("modalQ").value = "";
-  document.getElementById("modalR").value = "";
-  document.getElementById("modalId").value = "";
-  document.getElementById("modal").style.display = "flex";
-  setTimeout(function() { document.getElementById("modalQ").focus(); }, 50);
-}
-
-function openEditModal(id) {
-  var f = faqData.find(function(x) { return x.id === id; });
-  if (!f) return;
-  document.getElementById("modalTitle").textContent = "Modifier la question";
-  document.getElementById("modalQ").value = f.question;
-  document.getElementById("modalR").value = f.reponse;
-  document.getElementById("modalId").value = id;
-  document.getElementById("modal").style.display = "flex";
-  setTimeout(function() { document.getElementById("modalQ").focus(); }, 50);
-}
-
-function closeModal() {
-  document.getElementById("modal").style.display = "none";
-}
-
-function saveModal() {
-  var t = gettok();
-  if (!t) { showErr("Entre le token admin."); closeModal(); return; }
-  var q = document.getElementById("modalQ").value.trim();
-  var r = document.getElementById("modalR").value.trim();
-  var id = document.getElementById("modalId").value;
-  if (!q || !r) { showErr("Question et reponse requises."); return; }
-
-  var url, method;
-  if (id) {
-    url = "/admin/faq/" + id + "?token=" + encodeURIComponent(t);
-    method = "PUT";
-  } else {
-    url = "/admin/faq?token=" + encodeURIComponent(t);
-    method = "POST";
-  }
-
-  fetch(url, {
-    method: method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question: q, reponse: r })
-  }).then(function(res) {
-    return res.json();
-  }).then(function(j) {
-    if (!j.ok) throw new Error(j.error);
-    closeModal();
-    loadFaq();
-    showOk(id ? "Question mise a jour!" : "Question ajoutee!");
-  }).catch(function(e) {
-    showErr("Erreur: " + e.message);
-  });
-}
-
-function deleteFaq(id) {
-  if (!confirm("Supprimer cette question?")) return;
-  var t = gettok();
-  if (!t) { showErr("Token requis."); return; }
-  fetch("/admin/faq/" + id + "?token=" + encodeURIComponent(t), { method: "DELETE" })
-  .then(function(res) { return res.json(); })
-  .then(function(j) {
-    if (!j.ok) throw new Error(j.error);
-    faqData = faqData.filter(function(f) { return f.id !== id; });
-    renderFaq();
-    showOk("Question supprimee.");
-  }).catch(function(e) {
-    showErr("Erreur: " + e.message);
-  });
-}
-
-function loadFaq() {
-  fetch("/admin/faq").then(function(r) {
-    return r.json();
-  }).then(function(j) {
-    if (j.ok) { faqData = j.items; renderFaq(); }
-  }).catch(function() {});
-}
-
-// Fermer le modal en cliquant dehors
-document.addEventListener("click", function(e) {
-  var modal = document.getElementById("modal");
-  if (e.target === modal) closeModal();
-});
-
-loadFaq();
-`);
-});
-
-app.get("/admin/faq/page", (req, res) => {
-  const logoHtml = SALON_LOGO_URL
-    ? `<img src="${SALON_LOGO_URL}" alt="${SALON_NAME}" style="max-height:44px;object-fit:contain;margin-bottom:16px;display:block">`
-    : "";
-  res.type("text/html").send(`<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FAQ — ${SALON_NAME}</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#f5f6fa;color:#1a1a2e;min-height:100vh;padding:24px 16px}
-.wrap{max-width:720px;margin:0 auto}
-h1{font-size:1.2rem;font-weight:700;color:#6c47ff;margin-bottom:3px}
-.sub{color:#6b7280;font-size:.82rem;margin-bottom:20px}.sub a{color:#6c47ff;text-decoration:none}
-.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:12px;flex-wrap:wrap}
-.token-input{flex:1;min-width:200px;padding:9px 12px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.85rem;outline:none}
-.token-input:focus{border-color:#6c47ff}
-.btn-add-main{background:#6c47ff;color:#fff;border:none;padding:9px 20px;border-radius:8px;font-weight:700;font-size:.88rem;cursor:pointer;white-space:nowrap;display:flex;align-items:center;gap:6px}
-.btn-add-main:hover{background:#5538d4}
-.alert{padding:10px 14px;border-radius:8px;font-size:.84rem;margin-bottom:14px;display:none}
-.alert-ok{background:#ecfdf5;border:1.5px solid #6ee7b7;color:#065f46}
-.alert-err{background:#fef2f2;border:1.5px solid #fca5a5;color:#991b1b}
-.count{color:#9ca3af;font-size:.79rem;margin-bottom:10px}
-.empty{text-align:center;color:#9ca3af;padding:40px;font-size:.9rem}
-.faq-row{background:#fff;border:1.5px solid #e5e7eb;border-radius:11px;margin-bottom:8px;overflow:hidden}
-.faq-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
-.faq-head:hover{background:#f9f8ff}
-.faq-num{background:#ede9fe;color:#6c47ff;font-size:.71rem;font-weight:700;padding:2px 8px;border-radius:10px;min-width:24px;text-align:center;flex-shrink:0}
-.faq-q{flex:1;font-weight:600;font-size:.92rem;color:#1a1a2e}
-.faq-arrow{color:#9ca3af;font-size:.8rem;flex-shrink:0}
-.faq-body{padding:0 16px 14px;border-top:1.5px solid #f3f4f6}
-.faq-r{font-size:.87rem;color:#374151;line-height:1.6;margin:12px 0 10px}
-.faq-acts{display:flex;gap:8px}
-.btn-sm{padding:6px 14px;border-radius:7px;font-size:.8rem;font-weight:600;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:4px}
-.btn-edit{background:#eff6ff;color:#2563eb}.btn-edit:hover{background:#dbeafe}
-.btn-del{background:#fef2f2;color:#dc2626}.btn-del:hover{background:#fee2e2}
-/* Modal */
-.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:200;align-items:center;justify-content:center}
-.modal-bg.open{display:flex}
-.modal{background:#fff;border-radius:14px;padding:28px 24px;max-width:480px;width:92%;box-shadow:0 8px 40px rgba(0,0,0,.18)}
-.modal h2{font-size:1.05rem;font-weight:700;color:#1a1a2e;margin-bottom:18px}
-.field{margin-bottom:14px}
-.field label{display:block;font-size:.79rem;font-weight:600;color:#374151;margin-bottom:5px}
-.field input,.field textarea{width:100%;padding:9px 11px;border:1.5px solid #d1d5db;border-radius:8px;font-size:.88rem;font-family:inherit;outline:none}
-.field input:focus,.field textarea:focus{border-color:#6c47ff}
-.field textarea{resize:vertical;min-height:80px}
-.modal-btns{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}
-.btn-save{background:#6c47ff;color:#fff;border:none;padding:9px 22px;border-radius:8px;font-weight:700;font-size:.88rem;cursor:pointer}
-.btn-save:hover{background:#5538d4}
-.btn-cancel-modal{background:#f3f4f6;color:#374151;border:none;padding:9px 16px;border-radius:8px;font-size:.88rem;cursor:pointer}
-</style>
-</head>
-<body>
-<div class="wrap">
-  ${logoHtml}
-  <h1>❓ Foire aux questions</h1>
-  <p class="sub"><a href="/dashboard">← Dashboard</a> &nbsp;·&nbsp; <a href="/admin/salon">⚙️ Config salon</a></p>
-
-  <div id="alertOk" class="alert alert-ok"></div>
-  <div id="alertErr" class="alert alert-err"></div>
-
-  <div class="topbar">
-    <input type="password" id="tok" class="token-input" placeholder="ADMIN_TOKEN" autocomplete="off">
-    <button class="btn-add-main" onclick="openAddModal()">➕ Ajouter une question</button>
-  </div>
-
-  <div id="faqCount" class="count"></div>
-  <div id="faqList"></div>
-</div>
-
-<!-- Modal ajouter/modifier -->
-<div class="modal-bg" id="modal">
-  <div class="modal">
-    <h2 id="modalTitle">Ajouter une question</h2>
-    <input type="hidden" id="modalId">
-    <div class="field">
-      <label>Question</label>
-      <input type="text" id="modalQ" placeholder="Ex: Acceptez-vous les animaux?">
-    </div>
-    <div class="field">
-      <label>Reponse d'Helene</label>
-      <textarea id="modalR" placeholder="Ex: Oui, les chiens calmes sont les bienvenus!"></textarea>
-    </div>
-    <div class="modal-btns">
-      <button class="btn-cancel-modal" onclick="closeModal()">Annuler</button>
-      <button class="btn-save" onclick="saveModal()">💾 Sauvegarder</button>
-    </div>
-  </div>
-</div>
-
-<script src="/admin/faq/script.js"></script>
-</body>
-</html>`);
-});
 
 
 // ─── Routes admin logs ────────────────────────────────────────────────────────
@@ -2878,7 +2569,7 @@ app.post("/voice", (req, res) => {
     callStartTime:  Date.now(),
   });
   startCallLog(CallSid, callerNorm);
-  logEvent(CallSid, "info", `Appel entrant de ${callerNorm}`);
+  logEvent(CallSid, "info", "Appel entrant");
   const callerMasked = callerNorm ? "######" + callerNorm.replace(/\D/g,"").slice(-4) : "inconnu";
 
   const twiml   = new twilio.twiml.VoiceResponse();
@@ -2957,7 +2648,11 @@ wss.on("connection", (twilioWs) => {
         tool_choice:         "auto",
         modalities:          ["text", "audio"],
         temperature:         0.6,
-        input_audio_transcription: { model: "whisper-1", language: "fr" },
+        input_audio_transcription: {
+          model: "gpt-4o-transcribe",
+          language: "fr",
+          prompt: "Conversation téléphonique en français québécois avec une réceptionniste de salon de coiffure. Vocabulaire fréquent : coupe homme, coupe femme, coloration, mise en plis, coiffeuse, rendez-vous, Calendly, cellulaire. Prénoms possibles : Ariane, Laurie, Sophie, Alexandre, Marie. Numéros de téléphone 10 chiffres format québécois ex: 514 894 5221. Mots typiques : 'c\'est beau', 'correct', 'ouais', 'tantôt', 'tout suite', 'la semaine passée', 'à matin'. Noms de villes : Magog, Sherbrooke, Québec. Le client peut épeler son numéro chiffre par chiffre.",
+        },
       },
     }));
 
@@ -3247,7 +2942,11 @@ wss.on("connection", (twilioWs) => {
               tool_choice:  "auto",
               modalities:   ["text", "audio"],
               temperature:  0.6,
-              input_audio_transcription: { model: "whisper-1", language: "fr" },
+              input_audio_transcription: {
+          model: "gpt-4o-transcribe",
+          language: "fr",
+          prompt: "Conversation téléphonique en français québécois avec une réceptionniste de salon de coiffure. Vocabulaire fréquent : coupe homme, coupe femme, coloration, mise en plis, coiffeuse, rendez-vous, Calendly, cellulaire. Prénoms possibles : Ariane, Laurie, Sophie, Alexandre, Marie. Numéros de téléphone 10 chiffres format québécois ex: 514 894 5221. Mots typiques : 'c\'est beau', 'correct', 'ouais', 'tantôt', 'tout suite', 'la semaine passée', 'à matin'. Noms de villes : Magog, Sherbrooke, Québec. Le client peut épeler son numéro chiffre par chiffre.",
+        },
             },
           }));
 
