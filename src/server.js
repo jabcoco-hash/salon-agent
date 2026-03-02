@@ -2725,9 +2725,10 @@ wss.on("connection", (twilioWs) => {
       session: {
         turn_detection: {
           type:                "server_vad",
-          threshold:           0.5,    // standard — capte bien la voix sans couper
+          threshold:           0.4,    // sensible — capte la voix téléphonique G.711
           prefix_padding_ms:   300,
-          silence_duration_ms: 600,    // réduit : ne plus rater la 1re réponse courte
+          silence_duration_ms: 800,    // 800ms — assez long pour G.711 + latence Twilio
+          create_response:     true,   // répondre seulement après silence complet
         },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
@@ -2856,49 +2857,54 @@ wss.on("connection", (twilioWs) => {
             }
           };
 
+          // Fonction d'envoi du followUp — centralisée pour éviter la race condition
+          const sendFollowUp = (p) => {
+            // p = null/false → nouveau client ou inconnu → SILENCE après intro, attendre le client
+            // p = objet avec name → client existant → phrase personnalisée
+            if (!oaiWs || oaiWs.readyState !== WebSocket.OPEN) return;
+
+            if (p && p.name) {
+              // Client existant — phrase personnalisée
+              if (cl) cl.clientType = "existant";
+              const fu = buildFollowUp(p);
+              oaiWs.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: { type: "message", role: "user", content: [{ type: "input_text", text: fu }] }
+              }));
+              oaiWs.send(JSON.stringify({
+                type: "response.create",
+                response: { max_output_tokens: 60, instructions: "Dis UNIQUEMENT la phrase ci-dessus, mot pour mot. Ensuite SILENCE ABSOLU — attends que le client réponde." }
+              }));
+            } else {
+              // Nouveau client ou inconnu — NE PAS générer de phrase
+              // Le modèle vient de dire l'intro → il attend le client → SILENCE
+              // On injecte juste une instruction contexte sans déclencher de réponse audio
+              oaiWs.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: { type: "message", role: "user", content: [{ type: "input_text",
+                  text: "Le client n'a pas encore parlé. Attends qu'il prenne la parole. Quand il parle, aide-le normalement."
+                }] }
+              }));
+              // PAS de response.create ici — on laisse le VAD détecter la voix du client
+            }
+          };
+
           if (prefetched && prefetched.name) {
-            if (cl) cl.clientType = "existant";
-            followUp = buildFollowUp(prefetched);
-          } else if (prefetched === false) {
-            // Nouveau client confirmé
-            followUp = "Dis EXACTEMENT cette phrase : \"Comment je peux t\'aider?\" puis SILENCE ABSOLU. Attends que le client parle. Ne génère rien d\'autre.";
+            // Client existant — réponse immédiate
+            await new Promise(r => setTimeout(r, 200));
+            sendFollowUp(prefetched);
+          } else if (prefetched === false || prefetched === null) {
+            // Nouveau client confirmé — silence, on attend le client
+            await new Promise(r => setTimeout(r, 200));
+            sendFollowUp(null);
           } else {
-            // Lookup pas encore terminé — attendre 1.5s puis réessayer
+            // Lookup pas encore terminé — attendre max 2s puis décider
             setTimeout(() => {
               const p2 = session?.prefetchedClient;
-              const fu2 = (p2 && p2.name) ? buildFollowUp(p2) : "Dis EXACTEMENT et UNIQUEMENT : 'Comment puis-je t\'aider?' — SILENCE ABSOLU après. Zéro mot de plus.";
-              if (oaiWs?.readyState === WebSocket.OPEN) {
-                oaiWs.send(JSON.stringify({
-                  type: "conversation.item.create",
-                  item: { type: "message", role: "user", content: [{ type: "input_text", text: fu2 + " IMPORTANT: après avoir dit cette phrase, SILENCE TOTAL — ne génère aucune autre phrase, attends que le client parle en premier." }] }
-                }));
-                oaiWs.send(JSON.stringify({
-                  type: "response.create",
-                  response: { instructions: "Dis UNIQUEMENT la phrase demandée ci-dessus, mot pour mot. Ensuite SILENCE ABSOLU — ne dis rien d'autre, attends que le client réponde." }
-                }));
-              }
-            }, 1500);
-            break; // sortir ici — le setTimeout gère la suite
-          }
-
-          if (followUp && oaiWs?.readyState === WebSocket.OPEN) {
-            // Petit délai pour que response.cancel soit traité avant le followUp
-            await new Promise(r => setTimeout(r, 200));
-            oaiWs.send(JSON.stringify({
-              type: "conversation.item.create",
-              item: {
-                type: "message", role: "user",
-                content: [{ type: "input_text", text: followUp }],
-              }
-            }));
-            oaiWs.send(JSON.stringify({
-              type: "response.create",
-              response: {
-                // max_output_tokens bas pour forcer UNE SEULE phrase courte
-                max_output_tokens: 60,
-                instructions: "Dis UNIQUEMENT la phrase ci-dessus, mot pour mot, RIEN d'autre. Une seule phrase. Après : silence complet, attends le client."
-              }
-            }));
+              // Utiliser la valeur capturée maintenant (lookup peut être terminé)
+              sendFollowUp(p2 && p2.name ? p2 : null);
+            }, 1800);
+            break; // sortir — setTimeout gère la suite
           }
         }
         break;
@@ -3019,9 +3025,10 @@ wss.on("connection", (twilioWs) => {
             session: {
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.5,
+                threshold: 0.4,
                 prefix_padding_ms: 300,
-                silence_duration_ms: 600,
+                silence_duration_ms: 800,
+                create_response: true,
               },
               input_audio_format:  "g711_ulaw",
               output_audio_format: "g711_ulaw",
