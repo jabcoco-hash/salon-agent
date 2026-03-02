@@ -37,7 +37,7 @@ const {
   OPENAI_API_KEY,
   OPENAI_REALTIME_MODEL = "gpt-4o-realtime-preview-2024-12-17",
   OPENAI_TTS_VOICE      = "coral",
-  CALENDLY_TIMEZONE     = "America/Montreal",
+  CALENDLY_TIMEZONE     = "America/Toronto",
   CALENDLY_EVENT_TYPE_URI_HOMME,
   CALENDLY_EVENT_TYPE_URI_FEMME,
   CALENDLY_EVENT_TYPE_URI_FEMME_COLOR,
@@ -192,7 +192,7 @@ function logRaw(sid, msg) {
   const log = callLogs.get(sid);
   if (!log) return;
   if (!log.serverLog) log.serverLog = [];
-  const ts = new Date().toLocaleTimeString("fr-CA", { timeZone: "America/Montreal", hour12: false });
+  const ts = new Date().toLocaleTimeString("fr-CA", { timeZone: "America/Toronto", hour12: false });
   log.serverLog.push(`[${ts}] ${msg}`);
 }
 
@@ -677,7 +677,7 @@ async function createInvitee({ uri, startTimeIso, name, email }) {
   const body = {
     event_type: uri,
     start_time: startTimeIso,
-    invitee:    { name, email },
+    invitee:    { name, email, timezone: CALENDLY_TIMEZONE },
   };
   if (loc) {
     body.location = { kind: loc.kind };
@@ -750,6 +750,8 @@ RÉPONSE :
 - Tu accuses réception uniquement quand il y a une réponse exploitable.
 - Bruits, "euh", interjections isolées, mots sans contexte → ignorer complètement, attendre une vraie réponse.
 - Quand le client donne une réponse exploitable : accuse réception brièvement ("Super!", "Très bien!", "C'est noté!", "D'accord!", "Ça marche!") puis continue IMMÉDIATEMENT vers la prochaine étape logique.
+- RÈGLE ANTI-SILENCE : après toute réponse du client, tu DOIS répondre ou agir dans les 2 secondes. Si tu n'as pas encore l'info complète, dis "Un instant..." pendant que tu traites. Ne reste JAMAIS silencieux après qu'un client a parlé.
+- Si le client dit "Allô?", "t'es là?", "allo il y a quelqu'un?" → c'est qu'il attend ta réponse → réponds IMMÉDIATEMENT : "Oui, je suis là! [répète ou confirme la dernière question]".
 - Maximum 1–2 phrases par tour. Jamais plus.
 - Une seule question à la fois. Attends la réponse avant de continuer.
 - Après chaque question → STOP. Silence jusqu'à réponse réelle.
@@ -830,8 +832,9 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
 4. CONFIRMATION CRÉNEAU (STATE = CONFIRM_SLOT) :
    → "[Service] le [jour complet] à [heure], avec [coiffeuse] — ça te convient?"
    → Si coiffeuses_dispo vide → omets la coiffeuse.
-   → Attends OUI. Ensuite → dis UNIQUEMENT "Super!" et passe à l'étape 5 IMMÉDIATEMENT.
-   → NE PAS dire "je finalise ta réservation" ici — ce sera dit à l'étape 8 seulement, après avoir toutes les infos.
+   → Attends OUI. Dès OUI reçu → dis MOT POUR MOT "Super!" (rien d'autre) → passe à l'étape 5.
+   → INTERDIT ABSOLU après OUI : "je finalise", "je prépare", "un instant", "parfait", toute autre phrase.
+   → Seul "Super!" — puis action immédiate vers étape 5.
 
 5. DOSSIER (après OUI confirmation créneau) :
    → Si prefetch fourni → email et nom connus → SAUTE à l'étape 8.
@@ -841,18 +844,19 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
 
 5b. COLLECTE NOM — NOUVEAU CLIENT SEULEMENT (STATE = NEW_CLIENT_INFO) :
    → Dis EXACTEMENT : "Je ne semble pas avoir de dossier à ton nom — pas de problème, je vais en créer un! Quel est ton prénom?"
-   → Client répond → IMMÉDIATEMENT : "Et ton nom de famille?"
-   → Client répond → IMMÉDIATEMENT, transition fluide : "[prénom] [nom], super! Et pour t'envoyer ta confirmation, quel est ton numéro de cellulaire?" → étape 6.
+   → Client répond (même 1 mot, même court) → OBLIGE-TOI à répondre IMMÉDIATEMENT : "Et ton nom de famille?"
+   → Client répond (même 1 mot) → OBLIGE-TOI à répondre IMMÉDIATEMENT : "[prénom] [nom], super! Et pour t'envoyer ta confirmation, quel est ton numéro de cellulaire?"
+   → RÈGLE CRITIQUE : chaque réponse du client = UNE question posée, pas d'attente de confirmation, pas de silence.
+   → NE JAMAIS attendre une 2e réponse avant de poser la question suivante.
 
 6. NUMÉRO CELLULAIRE — NOUVEAU CLIENT SEULEMENT :
    ⚠️ INTERDIT si client existant.
-   → Extrait uniquement les chiffres, ignore les mots autour.
-   → DÈS que le client donne des chiffres → normalize_and_confirm_phone IMMÉDIATEMENT.
-   → Le résultat te donne EXACTEMENT quoi dire — dis-le mot pour mot à voix haute.
-   → Après OUI du client : dis "Super!" puis passe à l'étape 8 IMMÉDIATEMENT.
-   → NON → "Peux-tu me le répéter?" → 2e tentative.
-   → NON 2e fois → transfer_to_agent.
-   → Pas de cellulaire → transfer_to_agent.
+   → Dès que le client parle avec des chiffres → normalize_and_confirm_phone IMMÉDIATEMENT, sans attendre.
+   → Ne pas attendre une 2e réponse — agir sur la 1re.
+   → Le résultat contient la phrase exacte à dire — dis-la mot pour mot à voix haute IMMÉDIATEMENT.
+   → Dès OUI du client → dis "Super!" et appelle send_booking_link sans délai.
+   → NON → "Peux-tu me le répéter?" → 2e tentative → si NON encore → transfer_to_agent.
+   → Si le client dit "Allô?", "t'es là?", "allo" pendant cette étape → répondre IMMÉDIATEMENT : "Oui, je suis là! [répète la question courante]"
 
 7. ÉVÉNEMENT SPÉCIAL :
    → Mariage, graduation, bal, événement → "Super! Je vais noter ça." → ajoute note dans description.
@@ -1510,7 +1514,7 @@ async function runTool(name, args, session) {
         }
       }, 14000); // phrase nouveau client plus longue — 14s
       return { success: true, phone_display: fmtPhone(phone),
-        message: `SMS envoyé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} TU DOIS PARLER MAINTENANT — dis immédiatement et sans pause : "Je t'envoie un texto pour confirmer ton courriel. Une fois confirmé, tu recevras ta confirmation de réservation. Bonne journée!" — puis SILENCE ABSOLU. L'appel se ferme automatiquement dans quelques secondes.` };
+        message: `SMS envoyé.${coiffeuseNom ? " Coiffeuse assignée : " + coiffeuseNom + "." : ""} TU DOIS PARLER MAINTENANT — dis EXACTEMENT et IMMÉDIATEMENT à voix haute ces deux phrases : "C'est réglé! Tu vas recevoir un texto dans quelques secondes pour confirmer ton courriel. Une fois confirmé, ta confirmation de réservation t'est envoyée. Bonne journée!" — puis SILENCE ABSOLU. Ne dis rien d'autre. L'appel se ferme automatiquement.` };
     } catch (e) {
       console.error(`[BOOKING] ❌ Erreur SMS: ${e.message}`);
       if (pending.has(token)) return { success: true, phone_display: fmtPhone(phone), warning: "SMS peut être en retard" };
@@ -2721,9 +2725,9 @@ wss.on("connection", (twilioWs) => {
       session: {
         turn_detection: {
           type:                "server_vad",
-          threshold:           0.85,   // élevé : ignore bruits de fond et mots isolés accidentels
-          prefix_padding_ms:   500,
-          silence_duration_ms: 1200,
+          threshold:           0.5,    // standard — capte bien la voix sans couper
+          prefix_padding_ms:   300,
+          silence_duration_ms: 600,    // réduit : ne plus rater la 1re réponse courte
         },
         input_audio_format:  "g711_ulaw",
         output_audio_format: "g711_ulaw",
@@ -3015,9 +3019,9 @@ wss.on("connection", (twilioWs) => {
             session: {
               turn_detection: {
                 type: "server_vad",
-                threshold: 0.85,
-                prefix_padding_ms: 500,
-                silence_duration_ms: 1200,
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 600,
               },
               input_audio_format:  "g711_ulaw",
               output_audio_format: "g711_ulaw",
