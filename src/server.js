@@ -821,7 +821,9 @@ Règle d'or : si le client donne plusieurs infos en une phrase, traite-les toute
    → Nom de coiffeuse incertain → demander confirmation : "C'est bien [nom] que tu veux?"
    → Si le client demande quelles coiffeuses sont disponibles → liste les noms dans coiffeuses_dispo déjà retournés, NE PAS rappeler get_available_slots.
    → Client insiste 2e fois sur même heure prise → "Je comprends! Je vais te transférer à l'équipe." → transfer_to_agent.
-   → Aucun créneau → "Je n'ai pas de disponibilité [cette semaine / ce jour-là]. Je peux regarder [la semaine prochaine / un autre jour]?" → OUI → get_available_slots offset ou nouvelle date. NON → transfer_to_agent.
+   → Aucun créneau SANS coiffeuse → "Je n'ai pas de disponibilité [cette semaine / ce jour-là]. Je peux regarder [la semaine prochaine / un autre jour]?" → OUI → get_available_slots offset ou nouvelle date. NON → transfer_to_agent.
+   → Aucun créneau AVEC coiffeuse demandée → suis EXACTEMENT le message retourné par get_available_slots (propose prochaines dispo OU autres coiffeuses). NE JAMAIS transférer automatiquement dans ce cas.
+   → Le message retourné par get_available_slots contient TOUJOURS les instructions exactes à suivre quand disponible=false — lis-le et exécute-le mot pour mot.
    → Client précise moment différent ("plus tard", "la semaine prochaine", "jeudi plutôt") → NE PAS transférer → rappelle get_available_slots avec la nouvelle contrainte.
    → Attends que le client choisisse. Ne rappelle PAS get_available_slots tant qu'il n'a pas choisi.
 
@@ -1137,7 +1139,7 @@ async function runTool(name, args, session) {
             c.name.toLowerCase().includes(args.coiffeuse.toLowerCase())
           );
           if (match2) coiffeusesCibles = [match2];
-          else return { disponible: false, message: `${args.coiffeuse} n'est pas disponible pour ce service actuellement.` };
+          else return { disponible: false, raison: "coiffeuse_inconnue", coiffeuse_demandee: args.coiffeuse, message: `Coiffeuse "${args.coiffeuse}" introuvable dans le système. Dis au client : "Je ne trouve pas de coiffeuse avec ce nom. ${coiffeuses.length ? 'Nos coiffeuses disponibles sont : ' + coiffeuses.map(c=>c.name).join(', ') + '. Tu as une préférence?' : 'Veux-tu que je te propose des disponibilités?'}" — NE PAS transférer.` };
         }
         // Avec coiffeuse spécifique : NE PAS utiliser Round Robin
         // Aller directement chercher ses slots
@@ -1177,13 +1179,26 @@ async function runTool(name, args, session) {
           return d >= startDate && d <= end;
         });
         if (!slots.length) {
+          const nomCoiffeuse = args.coiffeuse || null;
           return {
             disponible: false,
-            message: `Aucun créneau pour la période demandée (${startDate.toLocaleDateString("fr-CA", { timeZone: CALENDLY_TIMEZONE })}). La fenêtre de réservation Calendly ne couvre probablement pas cette date — augmente "Max scheduling notice" dans Calendly. Dis au client et propose une date plus proche ou transfère.`,
+            raison: "aucun_creneau_periode",
+            coiffeuse_demandee: nomCoiffeuse,
+            message: nomCoiffeuse
+              ? `${nomCoiffeuse} n'a pas de disponibilité pour cette période. Dis EXACTEMENT : "${nomCoiffeuse} n'est pas disponible cette semaine-là. Est-ce que tu veux que je regarde ses prochaines disponibilités, ou tu préfères voir d'autres coiffeuses?" — puis attends la réponse. NE PAS transférer.`
+              : `Aucun créneau pour la période demandée. La fenêtre Calendly ne couvre peut-être pas cette date. Dis au client et propose une date plus proche.`,
           };
         }
       } else if (!slots.length) {
-        return { disponible: false, message: "Aucune disponibilité cette semaine." };
+        const nomCoiffeuse = args.coiffeuse || null;
+        return {
+          disponible: false,
+          raison: "aucun_creneau_semaine",
+          coiffeuse_demandee: nomCoiffeuse,
+          message: nomCoiffeuse
+            ? `${nomCoiffeuse} n'a pas de disponibilité cette semaine. Dis EXACTEMENT : "${nomCoiffeuse} n'est pas disponible cette semaine. Est-ce que tu veux que je regarde ses prochaines disponibilités, ou tu préfères voir d'autres coiffeuses?" — puis attends la réponse. NE PAS transférer.`
+            : "Aucune disponibilité cette semaine. Propose la semaine prochaine.",
+        };
       }
 
       // Filtre par jour
@@ -1708,38 +1723,45 @@ app.get("/dashboard", (req, res) => {
   const eventIcon = t => ({ tool:"🔧", booking:"✅", warn:"⚠️", info:"ℹ️", error:"❌", client:"🙋", helene:"🤖" }[t] || "•");
 
   // Anonymiser tous les numéros de téléphone dans un texte
-  // Couvre: +1XXXXXXXXXX, (514) 894-5221, 514-894-5221, 5148945221
-  // ET les numéros épelés en lettres françaises (cinq-un-quatre, huit-neuf-quatre, etc.)
-  const DIGIT_WORDS_FR = ["zéro","un","deux","trois","quatre","cinq","six","sept","huit","neuf",
-    "zero","une"]; // variantes
+  // Couvre: numérique formaté, E.164, 10 chiffres collés, chiffres épelés en mots français
   function anonymizePhone(text) {
     if (!text) return text;
     let s = text;
-    // Numéros E.164 : +1XXXXXXXXXX ou +XXXXXXXXXXX
-    s = s.replace(/\+1?\d{10,11}/g, "##########");
-    // Numéros formatés : (514) 894-5221 ou 514-894-5221 ou 514 894 5221
-    s = s.replace(/\(?\d{3}\)?[\s\-\.]\d{3}[\s\-\.]\d{4}/g, "###-###-####");
-    // 10 chiffres collés : 5148945221
-    s = s.replace(/\b\d{10}\b/g, "##########");
-    // Séquences de chiffres épelés en lettres (ex: "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un")
-    // Détecter 10+ mots-chiffres consécutifs séparés par tiret/virgule/espace
-    const DIGIT_PAT = "(zéro|zero|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf)";
-    const spelledPhone = new RegExp(
-      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" +
-      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" +
-      DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT + "[-,\\s]+" + DIGIT_PAT,
-      "gi"
-    );
-    s = s.replace(spelledPhone, "###-###-####");
-    // Groupes de chiffres épelés plus courts (3 groupes ex: "cinq-un-quatre, huit-neuf-quatre, cinq-deux-deux-un")
-    const spelledGroup = new RegExp(
-      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")[,\\s]+" +
-      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")[,\\s]+" +
-      "(" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + "[-]" + DIGIT_PAT + ")",
-      "gi"
-    );
-    s = s.replace(spelledGroup, "###-###-####");
-    return s;
+
+    // 1. E.164 : +15148945221
+    s = s.replace(/\+1?\d{10,11}/g, "###-###-####");
+    // 2. 10 chiffres collés : 5148945221
+    s = s.replace(/\b\d{10}\b/g, "###-###-####");
+    // 3. Groupes numériques séparés : "514, 894, 5221" / "(514) 894-5221" / "514-894-5221"
+    s = s.replace(/\(?\d{3}\)?[,\s\.\-]+\d{3}[,\s\.\-]+\d{2,4}(?:[,\s\.\-]+\d{2,4})?/g, "###-###-####");
+
+    // 4. Chiffres épelés en mots français — approche par tokenisation
+    //    Détecte 7+ mots-chiffres consécutifs (séparés par tirets, virgules, espaces, points)
+    const WORDS = new Set(["zéro","zero","un","une","deux","trois","quatre","cinq","six","sept","huit","neuf"]);
+    const parts = s.split(/([-,\.…\s]+)/);
+    let run = 0, runStart = -1;
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i].toLowerCase().trim();
+      if (WORDS.has(p)) {
+        if (runStart === -1) runStart = i;
+        run++;
+      } else if (run > 0 && /^[-,\.…\s]+$/.test(parts[i])) {
+        // séparateur entre mots-chiffres — continuer
+      } else {
+        if (run >= 7) {
+          for (let j = runStart; j < i; j++) parts[j] = j === runStart ? "###-###-####" : "";
+        }
+        run = 0; runStart = -1;
+      }
+    }
+    if (run >= 7) {
+      for (let j = runStart; j < parts.length; j++) parts[j] = j === runStart ? "###-###-####" : "";
+    }
+    s = parts.join("");
+    // Nettoyer les séparateurs orphelins autour du masque
+    s = s.replace(/[-,\.…\s]+###-###-####/g, " ###-###-####");
+    s = s.replace(/###-###-####[-,\.…\s]+/g, "###-###-#### ");
+    return s.replace(/\s{2,}/g, " ").trim();
   }
 
   // Agréger domaines et questions non répondues de tous les appels
